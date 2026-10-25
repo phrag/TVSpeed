@@ -24,25 +24,36 @@ Packet loss can't be measured over HTTP, so the app doesn't report it.
 
 ## Servers
 
-Public [LibreSpeed](https://github.com/librespeed/speedtest) servers run by European
-non-profits and research networks: no key, no ads or tracking, and no CDN company
-in the path. The app ranks them by TCP connect time and uses the nearest. If that
-server refuses (HTTP 429/403, as rate limits on shared VPN exits do) or fails, the run
-starts over on the next one.
+Public speed-test servers run by European non-profits, community networks and research
+networks: no key, no ads or tracking, and no CDN company in the path.
 
-| Server | Operator | Base URL |
+**Automatic** (the default) picks the server nearest to the connection being tested, by
+the median of five TCP connect times to each of its addresses (IPv6 and IPv4). Behind a
+VPN that means nearest to the VPN exit. If that server refuses (HTTP 429/403, as rate
+limits on shared VPN exits do) or fails, the run starts over on the next one. To use one
+server every time, select the **Server** tile and pick it; the choice is remembered.
+
+| Server | Operator | Kind | Base URL |
+|---|---|---|---|
+| Munich, Germany | Freifunk München (community network, anycast) | OpenSpeedTest | `https://speedtest.ffmuc.net` |
+| Prague, Czechia | CESNET (Czech research network) | LibreSpeed | `https://speedtest.cesnet.cz/backend` |
+| Prague, Czechia | CZ.NIC (.cz registry, non-profit) | LibreSpeed | `https://librespeed.turris.cz/backend` |
+| Rome, Italy | GARR (Italian research network) | LibreSpeed | `https://st-be-rm2.infra.garr.it` |
+| Belgrade, Serbia | SOX (Serbian internet exchange) | LibreSpeed | `https://speedtest1.sox.rs/librespeed/backend` |
+| Madrid, Spain | RedIRIS (Spanish research network) | LibreSpeed | `https://speedtest.rediris.es/backend` |
+
+| What | LibreSpeed | OpenSpeedTest |
 |---|---|---|
-| CESNET, Prague | Czech research network | `https://speedtest.cesnet.cz/backend` |
-| CZ.NIC, Prague | .cz registry (non-profit) | `https://librespeed.turris.cz/backend` |
-| GARR, Rome | Italian research network | `https://st-be-rm2.infra.garr.it` |
-| SOX, Belgrade | Serbian internet exchange | `https://speedtest1.sox.rs/librespeed/backend` |
+| Download | `GET <base>/garbage.php?ckSize=25` (25 MiB) | `GET <base>/downloading` (30 MiB) |
+| Upload | `POST <base>/empty.php` (8 MB streamed bodies) | `POST <base>/upload` |
+| Exit IP | `GET <base>/getIP.php`, without `isp`, so no third-party lookup | not available |
+| Latency | TCP connect to the server's port 443 | same |
 
-| What | Endpoint |
-|---|---|
-| Download | `GET <base>/garbage.php?ckSize=25` (25 MiB per request) |
-| Upload | `POST <base>/empty.php` (8 MB streamed bodies) |
-| Exit IP | `GET <base>/getIP.php`, without `isp`, so no third-party IP lookup |
-| Latency | TCP connect to the server's port 443 |
+To test against one server from adb (no fallback), start the app with its name, then press the button:
+
+```bash
+adb shell am start -S -n com.phrag.tvspeed/.MainActivity --es server GARR
+```
 
 Requests send `Accept-Encoding: identity` so the byte count is what crossed the wire.
 
