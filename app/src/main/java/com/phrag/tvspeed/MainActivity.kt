@@ -36,6 +36,8 @@ class MainActivity : Activity(), SpeedTest.Listener {
     private lateinit var gauge: GaugeView
     private lateinit var button: TextView
     private lateinit var networkLine: TextView
+    private lateinit var privacyLine: TextView
+    @Volatile private var privacyCheck = 0   // bumped per check; a stale answer is dropped
     private lateinit var down: Tile
     private lateinit var up: Tile
     private lateinit var ping: Tile
@@ -91,9 +93,17 @@ class MainActivity : Activity(), SpeedTest.Listener {
 
         // Right: title, network, tiles, verdict, history.
         val right = column().apply { setPadding(dp(40), 0, 0, 0) }
-        right.addView(text("TV Speed", 28f, Colors.TEXT, Typeface.create("sans-serif-medium", Typeface.NORMAL)))
+        val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        titleRow.addView(text("TV Speed", 28f, Colors.TEXT, Typeface.create("sans-serif-medium", Typeface.NORMAL)),
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        titleRow.addView(link("All runs") { if (test == null) showAllRuns() })
+        titleRow.addView(link("Updates") { if (test == null) updater.showSettings() },
+            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(10) })
+        right.addView(titleRow)
         networkLine = text("", 15f, Colors.TEXT2)
-        right.addView(networkLine, lp().apply { bottomMargin = dp(12) })
+        right.addView(networkLine)
+        privacyLine = text("", 15f, Colors.TEXT2).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        right.addView(privacyLine, lp().apply { bottomMargin = dp(12) })
 
         down = tile("DOWNLOAD", Colors.DOWN)
         up = tile("UPLOAD", Colors.UP)
@@ -130,7 +140,25 @@ class MainActivity : Activity(), SpeedTest.Listener {
     override fun onResume() {
         super.onResume()
         net = NetInfo.read(this).also { networkLine.text = it.summary }
-        updater.check()   // offers a newer GitHub build, if any
+        checkPrivacy()
+        updater.check()   // offers a newer GitHub build, if any (asks GitHub at most daily)
+    }
+
+    /** VPN state plus the public IP the internet sees this TV at, refreshed on every resume. */
+    private fun checkPrivacy() {
+        val n = net ?: return
+        val id = ++privacyCheck
+        showPrivacy(n, null, checking = true)
+        Thread({
+            val ip = SpeedTest.exitIp()?.second
+            runOnUiThread { if (id == privacyCheck && !isDestroyed) showPrivacy(n, ip, checking = false) }
+        }, "tvspeed-exit-ip").start()
+    }
+
+    private fun showPrivacy(n: NetInfo, ip: String?, checking: Boolean) {
+        val (msg, color) = privacyText(n, ip, checking)
+        privacyLine.text = msg
+        privacyLine.setTextColor(color)
     }
 
     override fun onStop() {
@@ -228,12 +256,13 @@ class MainActivity : Activity(), SpeedTest.Listener {
         gauge.setReading(fmtMbps(result.downMbps), "Mbps down", "Done")
         verdict.setTextColor(Colors.TEXT)
         verdict.text = verdictFor(result, n)
+        if (result.server.ip.isNotEmpty()) { privacyCheck++; showPrivacy(n, result.server.ip, checking = false) }
 
         history.add(History.Entry(
             time = System.currentTimeMillis(),
             downMbps = result.downMbps, upMbps = result.upMbps,
             pingMs = result.pingMs, loadedMs = maxOf(result.downLoadedMs, result.upLoadedMs),
-            vpn = n.vpn, network = n.transport, place = result.server.place,
+            vpn = n.vpn, network = n.transport, place = result.server.place, exitIp = result.server.ip,
         ))
         renderHistory()
     }
@@ -263,9 +292,9 @@ class MainActivity : Activity(), SpeedTest.Listener {
 
     private fun renderHistory() {
         historyRows.removeAllViews()
-        val runs = history.entries()
+        val runs = history.entries().take(History.SHOWN)
         if (runs.isEmpty()) {
-            historyRows.addView(text("No runs yet. Try one with your VPN on and one with it off to compare.", 15f, Colors.TEXT3))
+            historyRows.addView(text("No runs yet. Run one per VPN server (or protocol) to see which streams best.", 15f, Colors.TEXT3))
             return
         }
         val timeFmt = DateFormat.getTimeFormat(this)
@@ -288,6 +317,41 @@ class MainActivity : Activity(), SpeedTest.Listener {
                 2.4f, if (r.vpn) Colors.WARN else Colors.TEXT2)
             historyRows.addView(row)
         }
+    }
+
+    /** Every stored run, plus medians per way out (VPN exit or line), best first. */
+    private fun showAllRuns() {
+        val runs = history.entries()
+        if (runs.isEmpty()) {
+            android.widget.Toast.makeText(this, "No runs yet", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        val fmt = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT)
+        val lines = ArrayList<String>()
+        lines += "BEST WAY OUT (median)"
+        History.groups(runs).forEach { g ->
+            lines += "${g.label}\n   ↓ ${fmtMbps(g.downMbps)} · ↑ ${fmtMbps(g.upMbps)} Mbps · ${fmtMs(g.pingMs)} ms · " +
+                "${g.runs} run${if (g.runs == 1) "" else "s"}"
+        }
+        lines += "ALL RUNS"
+        runs.forEach { r ->
+            lines += "${fmt.format(Date(r.time))} · ↓ ${fmtMbps(r.downMbps)} ↑ ${fmtMbps(r.upMbps)} · ${fmtMs(r.pingMs)}/${fmtMs(r.loadedMs)} ms\n   " +
+                listOf(r.network, if (r.vpn) "VPN" else "no VPN", r.exitIp, r.place).filter { it.isNotEmpty() }.joinToString(" · ")
+        }
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Recent runs (last ${History.MAX})")
+            .setItems(lines.toTypedArray(), null)
+            .setPositiveButton("Close", null)
+            .show()
+    }
+
+    /** A small focusable text button for the title row. */
+    private fun link(label: String, onClick: () -> Unit) = text(label, 14f, Colors.TEXT2).apply {
+        isFocusable = true
+        isClickable = true
+        setPadding(dp(14), dp(6), dp(14), dp(6))
+        background = tileBackground()
+        setOnClickListener { onClick() }
     }
 
     /** D-pad list: Automatic, then each server as "City, Country · operator". */
@@ -380,9 +444,19 @@ class MainActivity : Activity(), SpeedTest.Listener {
             val bloat = maxOf(r.downLoadedMs, r.upLoadedMs) - r.pingMs
             if (bloat > 100) lines += "Latency rises by ${bloat.toInt()} ms under load, so expect slow starts and " +
                 "stutter on live streams and calls."
-            if (net.vpn) lines += "Measured through a VPN (exit IP ${r.server.ip.ifEmpty { "unknown" }}). " +
-                "Run again with it off to compare."
+            if (net.vpn) lines += "Measured through the VPN (exit IP ${r.server.ip.ifEmpty { "unknown" }}). " +
+                "Try another VPN server or protocol to compare; All runs ranks them."
+            else lines += "No VPN: this ran over your own connection, so sites see your real IP."
             return lines.joinToString("\n")
+        }
+
+        /** The privacy line: VPN state and the exit IP, colored by whether it's private. */
+        fun privacyText(net: NetInfo, ip: String?, checking: Boolean): Pair<String, Int> = when {
+            net.transport == "Offline" -> "Offline: no network (if a VPN is set to block without it, it may be down)" to Colors.WARN
+            !net.vpn -> "Not private: no VPN. Sites see your real IP${ip?.let { " $it" } ?: ""}" to Colors.WARN
+            checking -> "VPN on · checking exit IP…" to Colors.TEXT2
+            ip == null -> "VPN on · couldn't check the exit IP" to Colors.TEXT2
+            else -> "Private: VPN on · sites see $ip" to Colors.PING
         }
     }
 }
