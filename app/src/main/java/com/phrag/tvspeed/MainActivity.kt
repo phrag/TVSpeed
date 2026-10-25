@@ -1,6 +1,8 @@
 package com.phrag.tvspeed
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.Context
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
@@ -26,6 +28,11 @@ class MainActivity : Activity(), SpeedTest.Listener {
     private class Tile(val view: View, val value: TextView, val sub: TextView)
 
     private lateinit var history: History
+    private val picks by lazy { getSharedPreferences("server", Context.MODE_PRIVATE) }
+    /** The server picked in the UI, by name; null = automatic (nearest). */
+    private var chosen: String?
+        get() = picks.getString("name", null)?.takeIf { n -> SpeedTest.SERVERS.any { it.name == n } }
+        set(v) = picks.edit().putString("name", v).apply()
     private lateinit var gauge: GaugeView
     private lateinit var button: TextView
     private lateinit var networkLine: TextView
@@ -94,6 +101,12 @@ class MainActivity : Activity(), SpeedTest.Listener {
         jitter = tile("JITTER", Colors.PING)
         loaded = tile("UNDER LOAD", Colors.WARN)
         server = tile("SERVER", Colors.TEXT2)
+        server.view.apply {
+            isFocusable = true
+            isClickable = true
+            background = tileBackground()
+            setOnClickListener { if (test == null) pickServer() }
+        }
         right.addView(tileRow(down, up, server))
         right.addView(tileRow(ping, jitter, loaded), lp().apply { topMargin = dp(10) })
 
@@ -136,7 +149,8 @@ class MainActivity : Activity(), SpeedTest.Listener {
         verdict.text = if (net?.vpn == true) "A VPN is on, so this measures the VPN tunnel, not your line." else "Testing…"
         button.text = "Stop"
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        test = SpeedTest(this).also { it.start() }
+        // adb: am start -n com.phrag.tvspeed/.MainActivity --es server GARR (see README)
+        test = SpeedTest(this, intent.getStringExtra("server") ?: chosen).also { it.start() }
     }
 
     private fun stopTest(message: String) {
@@ -241,8 +255,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         ping.sub.text = "ms, idle"
         jitter.sub.text = "ms"
         loaded.sub.text = "ms"
-        server.value.text = "—"
-        server.sub.text = "nearest of ${SpeedTest.SERVERS.size}"
+        showChoice()
         gauge.setColor(Colors.DOWN)
         gauge.setSpeed(0.0)
         gauge.setReading("—", "", "ready")
@@ -275,6 +288,32 @@ class MainActivity : Activity(), SpeedTest.Listener {
                 2.4f, if (r.vpn) Colors.WARN else Colors.TEXT2)
             historyRows.addView(row)
         }
+    }
+
+    /** D-pad list: Automatic, then each server as "City, Country · operator". */
+    private fun pickServer() {
+        val names = listOf<String?>(null) + SpeedTest.SERVERS.map { it.name }
+        val labels = arrayOf("Automatic (nearest)") + SpeedTest.SERVERS.map { "${it.place} · ${it.name}" }
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Test server")
+            .setSingleChoiceItems(labels, names.indexOf(chosen)) { d, i ->
+                chosen = names[i]
+                showChoice()
+                d.dismiss()
+            }
+            .show()
+    }
+
+    /** The idle Server tile: what the next run will use. */
+    private fun showChoice() {
+        val b = SpeedTest.SERVERS.find { it.name == chosen }
+        server.value.text = b?.city ?: "Auto"
+        server.sub.text = b?.let { "${it.country} · ${it.name}" } ?: "nearest of ${SpeedTest.SERVERS.size}"
+    }
+
+    private fun tileBackground() = StateListDrawable().apply {
+        addState(intArrayOf(android.R.attr.state_focused), rounded(Colors.CARD).apply { setStroke(dp(3), Colors.CARD_FOCUS) })
+        addState(intArrayOf(), rounded(Colors.CARD))
     }
 
     private fun tile(label: String, accent: Int): Tile {

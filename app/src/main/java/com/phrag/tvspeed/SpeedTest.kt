@@ -19,10 +19,11 @@ import kotlin.random.Random
 import org.json.JSONObject
 
 /**
- * One speed test run against public LibreSpeed servers run by European
+ * One speed test run against public speed-test servers run by European
  * non-profits and research networks ([SERVERS]: free, no key, no tracking,
- * no third-party IP lookups). The nearest one by connect time is used; if it
- * refuses (rate limit) or fails, the run starts over on the next.
+ * no third-party IP lookups). The nearest one by connect time from this
+ * connection (VPN exit included) is used; if it refuses (rate limit) or
+ * fails, the run starts over on the next.
  *
  * Phases: idle latency → download → upload. Latency is TCP connect time to
  * the edge (exactly one round trip, no server processing), sampled again
@@ -34,8 +35,9 @@ import org.json.JSONObject
  * reports the average over the rest. Packet loss can't be seen over HTTP.
  *
  * [Listener] callbacks arrive on the main thread and stop after [cancel].
+ * [only] names one server from [SERVERS] to test against, with no fallback.
  */
-class SpeedTest(private val listener: Listener) {
+class SpeedTest(private val listener: Listener, private val only: String? = null) {
 
     enum class Phase(val label: String) {
         CONNECTING("Connecting"), LATENCY("Latency"), DOWNLOAD("Download"), UPLOAD("Upload")
@@ -56,9 +58,26 @@ class SpeedTest(private val listener: Listener) {
         val place get() = "$city, $country"
     }
 
-    /** A LibreSpeed backend: `garbage.php` (download), `empty.php` (upload), `getIP.php`. */
-    class Backend(val name: String, val city: String, val country: String, val base: String) {
-        val host: String get() = URL(base).host
+    /**
+     * A speed-test server: [down] serves a large body per GET, [up] accepts POSTs,
+     * [ip] (optional) returns LibreSpeed getIP.php JSON with our public IP.
+     */
+    class Backend(
+        val name: String, val city: String, val country: String,
+        val down: String, val up: String, val ip: String? = null,
+    ) {
+        val host: String get() = URL(down).host
+        val place get() = "$city, $country"
+
+        companion object {
+            /** LibreSpeed: `garbage.php`, `empty.php`, `getIP.php` (without `isp`: no third-party lookup). */
+            fun libreSpeed(name: String, city: String, country: String, base: String) =
+                Backend(name, city, country, "$base/garbage.php?ckSize=$DOWN_MIB", "$base/empty.php", "$base/getIP.php")
+
+            /** OpenSpeedTest: a fixed 30 MiB `/downloading`, `/upload`; no IP endpoint. */
+            fun openSpeedTest(name: String, city: String, country: String, base: String) =
+                Backend(name, city, country, "$base/downloading", "$base/upload")
+        }
     }
 
     interface Listener {
@@ -121,19 +140,27 @@ class SpeedTest(private val listener: Listener) {
     /** Reachable servers, nearest (by TCP connect time) first. Probed in parallel. */
     private fun rank(): List<Pair<Backend, InetAddress>> {
         val found = ConcurrentHashMap<Backend, Pair<InetAddress, Double>>()
-        SERVERS.map { b ->
+        val candidates = SERVERS.filter { only == null || it.name.equals(only, ignoreCase = true) }
+        if (candidates.isEmpty()) throw IOException("Unknown server \"$only\"")
+        candidates.map { b ->
             Thread({
                 try {
-                    val addr = InetAddress.getByName(b.host)
-                    val best = (1..3).mapNotNull { connectTime(addr) }.minOrNull()
-                    if (best != null) found[b] = addr to best
+                    // Every address (IPv6 and IPv4): one family can be broken on a given
+                    // network while the other works.
+                    InetAddress.getAllByName(b.host)
+                        .mapNotNull { addr ->
+                            val ms = (1..RANK_SAMPLES).mapNotNull { connectTime(addr) }
+                            if (ms.size * 2 > RANK_SAMPLES) addr to median(ms) else null   // mostly answering
+                        }
+                        .minByOrNull { it.second }
+                        ?.let { found[b] = it }
                 } catch (e: IOException) {
                     Log.i(TAG, "${b.name} unreachable: $e")
                 }
             }, "tvspeed-rank").apply { start() }
         }.forEach { it.join(10_000) }
         if (cancelled.get()) throw InterruptedException()
-        return SERVERS.mapNotNull { b -> found[b]?.let { Triple(b, it.first, it.second) } }
+        return candidates.mapNotNull { b -> found[b]?.let { Triple(b, it.first, it.second) } }
             .sortedBy { it.third }
             .map { it.first to it.second }
     }
@@ -259,7 +286,7 @@ class SpeedTest(private val listener: Listener) {
     private fun downloadLoop(b: Backend, s: Streams) {
         val buf = ByteArray(BUF)
         while (s.running) {
-            val c = open("${b.base}/garbage.php?ckSize=$DOWN_MIB")
+            val c = open(b.down)
             s.open.add(c)
             try {
                 httpOk(c)
@@ -282,7 +309,7 @@ class SpeedTest(private val listener: Listener) {
     private fun uploadLoop(b: Backend, s: Streams) {
         val buf = ByteArray(BUF).also { Random.nextBytes(it) }   // incompressible
         while (s.running) {
-            val c = open("${b.base}/empty.php")
+            val c = open(b.up)
             c.requestMethod = "POST"
             c.doOutput = true
             c.setFixedLengthStreamingMode(UP_BYTES)   // stream it; don't buffer the body in memory
@@ -337,18 +364,21 @@ class SpeedTest(private val listener: Listener) {
         setRequestProperty("User-Agent", "TVSpeed/${BuildConfig.VERSION_NAME}")
     }
 
-    /** getIP.php without `isp`, so the server doesn't look us up with a third party. */
-    private fun publicIp(b: Backend): String = try {
-        val c = open("${b.base}/getIP.php")
-        try {
-            httpOk(c)
-            JSONObject(c.inputStream.bufferedReader().readText()).optString("processedString")
-        } finally {
-            c.disconnect()
+    /** Our public IP as the server sees it; empty if the server has no IP endpoint. */
+    private fun publicIp(b: Backend): String {
+        val url = b.ip ?: return ""
+        return try {
+            val c = open(url)
+            try {
+                httpOk(c)
+                JSONObject(c.inputStream.bufferedReader().readText()).optString("processedString")
+            } finally {
+                c.disconnect()
+            }
+        } catch (e: Exception) {
+            if (e is HttpError && e.refused) throw IOException(refusedMessage(e))
+            ""   // only shown on screen; the test itself doesn't need it
         }
-    } catch (e: Exception) {
-        if (e is HttpError && e.refused) throw IOException(refusedMessage(e))
-        ""   // only shown on screen; the test itself doesn't need it
     }
 
     /** One TCP handshake to the edge, in ms; null on timeout/failure. */
@@ -366,15 +396,18 @@ class SpeedTest(private val listener: Listener) {
         private const val TAG = "TVSpeed"
 
         /**
-         * Public LibreSpeed servers (librespeed.org/backend-servers) run by
-         * European non-profits and research networks, not ad or CDN companies.
-         * Each handles 25 MiB downloads and 8 MB uploads over HTTPS.
+         * Public LibreSpeed / OpenSpeedTest servers run by European non-profits,
+         * community networks and research networks, not ad or CDN companies.
+         * Each handles 25+ MiB downloads and 8 MB uploads over HTTPS.
          */
         val SERVERS = listOf(
-            Backend("CESNET", "Prague", "Czechia", "https://speedtest.cesnet.cz/backend"),         // Czech research network
-            Backend("CZ.NIC", "Prague", "Czechia", "https://librespeed.turris.cz/backend"),        // .cz registry, non-profit
-            Backend("GARR", "Rome", "Italy", "https://st-be-rm2.infra.garr.it"),                 // Italian research network
-            Backend("SOX", "Belgrade", "Serbia", "https://speedtest1.sox.rs/librespeed/backend"), // Serbian internet exchange
+            // Freifunk München: community network, non-profit; anycast in Germany.
+            Backend.openSpeedTest("Freifunk", "Munich", "Germany", "https://speedtest.ffmuc.net"),
+            Backend.libreSpeed("CESNET", "Prague", "Czechia", "https://speedtest.cesnet.cz/backend"),       // Czech research network
+            Backend.libreSpeed("CZ.NIC", "Prague", "Czechia", "https://librespeed.turris.cz/backend"),      // .cz registry, non-profit
+            Backend.libreSpeed("GARR", "Rome", "Italy", "https://st-be-rm2.infra.garr.it"),                 // Italian research network
+            Backend.libreSpeed("SOX", "Belgrade", "Serbia", "https://speedtest1.sox.rs/librespeed/backend"), // Serbian internet exchange
+            Backend.libreSpeed("RedIRIS", "Madrid", "Spain", "https://speedtest.rediris.es/backend"),       // Spanish research network
         )
 
         private const val PING_SAMPLES = 20
@@ -383,6 +416,7 @@ class SpeedTest(private val listener: Listener) {
         private const val DOWN_STREAMS = 6
         private const val UP_STREAMS = 4
         private const val DOWN_MIB = 25   // garbage.php's ckSize: MiB per request
+        private const val RANK_SAMPLES = 5   // connect times per address when picking the nearest
         private const val UP_BYTES = 8_000_000L
         private const val TRANSFER_MS = 12_000L
         private const val WARMUP_MS = 2_000L
