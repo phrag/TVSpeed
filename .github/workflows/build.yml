@@ -28,8 +28,8 @@ jobs:
 
       # The Android SDK is preinstalled on ubuntu-latest (ANDROID_HOME);
       # AGP fetches platform 34 / build-tools on its own if they're missing.
-      - name: Build debug APK and lint
-        run: ./gradlew :app:assembleDebug :app:lintDebug --console=plain
+      - name: Build debug APK, run unit tests and lint
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug --console=plain
 
       - uses: actions/upload-artifact@v4
         with:
@@ -60,3 +60,16 @@ jobs:
           else
             gh release create latest tvspeed.apk --title "Latest build" --notes "$notes" --latest
           fi
+
+      # Self-updater metadata (Updater.kt). Uploaded after the APK, so it never
+      # describes an APK that isn't there yet; the app also checks the sha256.
+      - name: Publish version.json
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '{"sha":"%s","time":%s,"apk":"tvspeed.apk","sha256":"%s","size":%s}\n' \
+            "$GITHUB_SHA" "$(git log -1 --format=%ct)" \
+            "$(sha256sum tvspeed.apk | cut -d' ' -f1)" "$(stat -c%s tvspeed.apk)" > version.json
+          cat version.json
+          gh release upload latest version.json --clobber
