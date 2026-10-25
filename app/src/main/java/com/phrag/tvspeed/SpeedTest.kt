@@ -13,12 +13,16 @@ import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 import kotlin.random.Random
+import org.json.JSONObject
 
 /**
- * One speed test run against Cloudflare's public speed-test endpoints
- * (speed.cloudflare.com: `__down`, `__up`, `cdn-cgi/trace`; free, no key).
+ * One speed test run against public LibreSpeed servers run by European
+ * non-profits and research networks ([SERVERS]: free, no key, no tracking,
+ * no third-party IP lookups). The nearest one by connect time is used; if it
+ * refuses (rate limit) or fails, the run starts over on the next.
  *
  * Phases: idle latency → download → upload. Latency is TCP connect time to
  * the edge (exactly one round trip, no server processing), sampled again
@@ -47,10 +51,16 @@ class SpeedTest(private val listener: Listener) {
         val server: Server,
     )
 
-    /** Where Cloudflare sees us: edge location (IATA code), country and public IP. */
-    data class Server(val colo: String, val country: String, val ip: String)
+    /** The server a run uses, and the public IP it sees us at (VPN exit or line). */
+    data class Server(val name: String, val city: String, val ip: String)
+
+    /** A LibreSpeed backend: `garbage.php` (download), `empty.php` (upload), `getIP.php`. */
+    class Backend(val name: String, val city: String, val base: String) {
+        val host: String get() = URL(base).host
+    }
 
     interface Listener {
+        /** Measuring against [server] starts now; on a fallback, earlier samples are void. */
         fun onServer(server: Server) {}
         fun onPhase(phase: Phase) {}
         /** Live throughput while a transfer runs (about 5× a second). */
@@ -83,36 +93,20 @@ class SpeedTest(private val listener: Listener) {
     private fun run() {
         try {
             post { onPhase(Phase.CONNECTING) }
-            val server = trace()
-            post { onServer(server) }
-            val addr = InetAddress.getByName(HOST)
-
-            post { onPhase(Phase.LATENCY) }
-            val idle = ArrayList<Double>()
-            repeat(PING_SAMPLES) {
-                if (cancelled.get()) return
-                connectTime(addr)?.let { ms ->
-                    idle.add(ms)
-                    post { onLatency(ms, loaded = false) }
+            val ranked = rank()
+            if (ranked.isEmpty()) throw IOException("No speed-test server reachable")
+            val failures = ArrayList<String>()
+            for ((backend, addr) in ranked) {
+                try {
+                    measure(backend, addr)
+                    return
+                } catch (e: IOException) {
+                    if (cancelled.get()) return
+                    Log.w(TAG, "${backend.name} failed, trying the next server", e)
+                    failures += "${backend.name}: ${e.message}"
                 }
-                SystemClock.sleep(PING_GAP_MS)
             }
-            if (idle.isEmpty()) throw IOException("No reply from $HOST")
-
-            val down = transfer(Phase.DOWNLOAD, addr, DOWN_STREAMS, ::downloadLoop)
-            val up = transfer(Phase.UPLOAD, addr, UP_STREAMS, ::uploadLoop)
-            if (cancelled.get()) return
-            val result = Result(
-                pingMs = median(idle),
-                jitterMs = jitter(idle),
-                downLoadedMs = down.loadedMs,
-                upLoadedMs = up.loadedMs,
-                downMbps = down.mbps,
-                upMbps = up.mbps,
-                server = server,
-            )
-            Log.i(TAG, "result: $result")
-            post { onDone(result) }
+            throw IOException(failures.joinToString("; ", prefix = "every server failed (") + ")")
         } catch (e: InterruptedException) {
             // cancelled
         } catch (e: Exception) {
@@ -120,6 +114,59 @@ class SpeedTest(private val listener: Listener) {
             Log.w(TAG, "test failed", e)
             post { onError(e.message ?: e.javaClass.simpleName) }
         }
+    }
+
+    /** Reachable servers, nearest (by TCP connect time) first. Probed in parallel. */
+    private fun rank(): List<Pair<Backend, InetAddress>> {
+        val found = ConcurrentHashMap<Backend, Pair<InetAddress, Double>>()
+        SERVERS.map { b ->
+            Thread({
+                try {
+                    val addr = InetAddress.getByName(b.host)
+                    val best = (1..3).mapNotNull { connectTime(addr) }.minOrNull()
+                    if (best != null) found[b] = addr to best
+                } catch (e: IOException) {
+                    Log.i(TAG, "${b.name} unreachable: $e")
+                }
+            }, "tvspeed-rank").apply { start() }
+        }.forEach { it.join(10_000) }
+        if (cancelled.get()) throw InterruptedException()
+        return SERVERS.mapNotNull { b -> found[b]?.let { Triple(b, it.first, it.second) } }
+            .sortedBy { it.third }
+            .map { it.first to it.second }
+    }
+
+    /** The whole run against one server; throws if it refuses or fails so [run] can fall back. */
+    private fun measure(backend: Backend, addr: InetAddress) {
+        val server = Server(backend.name, backend.city, publicIp(backend))
+        post { onServer(server) }
+
+        post { onPhase(Phase.LATENCY) }
+        val idle = ArrayList<Double>()
+        repeat(PING_SAMPLES) {
+            if (cancelled.get()) throw InterruptedException()
+            connectTime(addr)?.let { ms ->
+                idle.add(ms)
+                post { onLatency(ms, loaded = false) }
+            }
+            SystemClock.sleep(PING_GAP_MS)
+        }
+        if (idle.isEmpty()) throw IOException("no reply")
+
+        val down = transfer(Phase.DOWNLOAD, addr, DOWN_STREAMS) { downloadLoop(backend, it) }
+        val up = transfer(Phase.UPLOAD, addr, UP_STREAMS) { uploadLoop(backend, it) }
+        if (cancelled.get()) throw InterruptedException()
+        val result = Result(
+            pingMs = median(idle),
+            jitterMs = jitter(idle),
+            downLoadedMs = down.loadedMs,
+            upLoadedMs = up.loadedMs,
+            downMbps = down.mbps,
+            upMbps = up.mbps,
+            server = server,
+        )
+        Log.i(TAG, "result: $result")
+        post { onDone(result) }
     }
 
     // ---- transfers --------------------------------------------------------
@@ -131,8 +178,19 @@ class SpeedTest(private val listener: Listener) {
         val bytes = AtomicLong()
         val stop = AtomicBoolean(false)
         val errors = AtomicLong()
+        val firstError = AtomicReference<String>()   // why requests fail, for the error message
+        val refused = AtomicReference<HttpError>()     // set: give up now instead of retrying
         val open: MutableSet<HttpURLConnection> = ConcurrentHashMap.newKeySet()
         val running get() = !stop.get() && !cancelled.get()
+
+        fun fail(e: IOException) {
+            errors.incrementAndGet()
+            if (e is HttpError && e.refused) {
+                refused.compareAndSet(null, e)
+                stop.set(true)
+            }
+            if (firstError.compareAndSet(null, e.toString())) Log.w(TAG, "transfer request failed", e)
+        }
     }
 
     /**
@@ -177,7 +235,7 @@ class SpeedTest(private val listener: Listener) {
                     warmT = now
                     warmBytes = b
                 }
-                if (now - t0 >= TRANSFER_MS) break
+                if (now - t0 >= TRANSFER_MS || s.refused.get() != null) break
             }
         } finally {
             s.stop.set(true)
@@ -188,19 +246,21 @@ class SpeedTest(private val listener: Listener) {
         workers.forEach { it.join(2_000) }
         prober.join(2_000)
         if (cancelled.get()) throw InterruptedException()
-        if (total == 0L) throw IOException("${phase.label} failed: no data transferred (${s.errors.get()} errors)")
+        s.refused.get()?.let { throw IOException(refusedMessage(it)) }
+        if (total == 0L) throw IOException("${phase.label} failed: no data transferred (${s.errors.get()} errors: ${s.firstError.get()})")
         val result = if (warmT > 0 && end > warmT) mbps(total - warmBytes, end - warmT) else mbps(total, end - t0)
         val loadedMedian = synchronized(loaded) { if (loaded.isEmpty()) 0.0 else median(loaded) }
         Log.i(TAG, "${phase.name}: ${"%.1f".format(result)} Mbit/s, ${total / 1_000_000} MB, loaded ${"%.0f".format(loadedMedian)} ms, ${s.errors.get()} errors")
         return Transfer(result, loadedMedian)
     }
 
-    private fun downloadLoop(s: Streams) {
+    private fun downloadLoop(b: Backend, s: Streams) {
         val buf = ByteArray(BUF)
         while (s.running) {
-            val c = open("$BASE/__down?bytes=$DOWN_BYTES")
+            val c = open("${b.base}/garbage.php?ckSize=$DOWN_MIB")
             s.open.add(c)
             try {
+                httpOk(c)
                 c.inputStream.use { ins ->
                     while (s.running) {
                         val n = ins.read(buf)
@@ -209,7 +269,7 @@ class SpeedTest(private val listener: Listener) {
                     }
                 }
             } catch (e: IOException) {
-                if (s.running) { s.errors.incrementAndGet(); SystemClock.sleep(250) }
+                if (s.running) { s.fail(e); SystemClock.sleep(250) }
             } finally {
                 s.open.remove(c)
                 if (!s.running) c.disconnect()
@@ -217,10 +277,10 @@ class SpeedTest(private val listener: Listener) {
         }
     }
 
-    private fun uploadLoop(s: Streams) {
+    private fun uploadLoop(b: Backend, s: Streams) {
         val buf = ByteArray(BUF).also { Random.nextBytes(it) }   // incompressible
         while (s.running) {
-            val c = open("$BASE/__up")
+            val c = open("${b.base}/empty.php")
             c.requestMethod = "POST"
             c.doOutput = true
             c.setFixedLengthStreamingMode(UP_BYTES)   // stream it; don't buffer the body in memory
@@ -236,9 +296,9 @@ class SpeedTest(private val listener: Listener) {
                         left -= n
                     }
                 }
-                if (s.running) c.inputStream.use { it.readBytes() }
+                if (s.running) { httpOk(c); c.inputStream.use { it.readBytes() } }
             } catch (e: IOException) {
-                if (s.running) { s.errors.incrementAndGet(); SystemClock.sleep(250) }
+                if (s.running) { s.fail(e); SystemClock.sleep(250) }
             } finally {
                 s.open.remove(c)
                 if (!s.running) c.disconnect()
@@ -247,6 +307,24 @@ class SpeedTest(private val listener: Listener) {
     }
 
     // ---- helpers -------------------------------------------------------------
+
+    private class HttpError(val code: Int, val retryAfterS: Long?) : IOException("HTTP $code") {
+        /** Retrying won't help: the server is refusing this client (VPN exits often hit this). */
+        val refused get() = code == 429 || code == 403
+    }
+
+    private fun refusedMessage(e: HttpError): String {
+        val wait = e.retryAfterS?.let { ", retry in about ${(it + 59) / 60} min" } ?: ""
+        return "refused, HTTP ${e.code}$wait"
+    }
+
+    /** Fail with the status (e.g. "HTTP 429") rather than Android's bare FileNotFoundException. */
+    private fun httpOk(c: HttpURLConnection) {
+        val code = c.responseCode
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw HttpError(code, c.getHeaderField("Retry-After")?.toLongOrNull())
+        }
+    }
 
     private fun open(url: String) = (URL(url).openConnection() as HttpURLConnection).apply {
         connectTimeout = 5_000
@@ -257,17 +335,18 @@ class SpeedTest(private val listener: Listener) {
         setRequestProperty("User-Agent", "TVSpeed/${BuildConfig.VERSION_NAME}")
     }
 
-    /** cdn-cgi/trace: plain key=value lines (colo=FRA, loc=DE, ip=…). */
-    private fun trace(): Server {
-        val c = open("$BASE/cdn-cgi/trace")
+    /** getIP.php without `isp`, so the server doesn't look us up with a third party. */
+    private fun publicIp(b: Backend): String = try {
+        val c = open("${b.base}/getIP.php")
         try {
-            val kv = c.inputStream.bufferedReader().readLines()
-                .mapNotNull { line -> line.split('=', limit = 2).takeIf { it.size == 2 }?.let { it[0] to it[1] } }
-                .toMap()
-            return Server(kv["colo"].orEmpty(), kv["loc"].orEmpty(), kv["ip"].orEmpty())
+            httpOk(c)
+            JSONObject(c.inputStream.bufferedReader().readText()).optString("processedString")
         } finally {
             c.disconnect()
         }
+    } catch (e: Exception) {
+        if (e is HttpError && e.refused) throw IOException(refusedMessage(e))
+        ""   // only shown on screen; the test itself doesn't need it
     }
 
     /** One TCP handshake to the edge, in ms; null on timeout/failure. */
@@ -283,15 +362,25 @@ class SpeedTest(private val listener: Listener) {
 
     companion object {
         private const val TAG = "TVSpeed"
-        const val HOST = "speed.cloudflare.com"
-        private const val BASE = "https://$HOST"
+
+        /**
+         * Public LibreSpeed servers (librespeed.org/backend-servers) run by
+         * European non-profits and research networks, not ad or CDN companies.
+         * Each handles 25 MiB downloads and 8 MB uploads over HTTPS.
+         */
+        val SERVERS = listOf(
+            Backend("CESNET", "Prague", "https://speedtest.cesnet.cz/backend"),         // Czech research network
+            Backend("CZ.NIC", "Prague", "https://librespeed.turris.cz/backend"),        // .cz registry, non-profit
+            Backend("GARR", "Rome", "https://st-be-rm2.infra.garr.it"),                 // Italian research network
+            Backend("SOX", "Belgrade", "https://speedtest1.sox.rs/librespeed/backend"), // Serbian internet exchange
+        )
 
         private const val PING_SAMPLES = 20
         private const val PING_GAP_MS = 100L
         private const val LOADED_PING_GAP_MS = 300L
         private const val DOWN_STREAMS = 6
         private const val UP_STREAMS = 4
-        private const val DOWN_BYTES = 25_000_000   // Cloudflare refuses > 50 MB per request
+        private const val DOWN_MIB = 25   // garbage.php's ckSize: MiB per request
         private const val UP_BYTES = 8_000_000L
         private const val TRANSFER_MS = 12_000L
         private const val WARMUP_MS = 2_000L

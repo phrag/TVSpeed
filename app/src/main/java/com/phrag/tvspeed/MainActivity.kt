@@ -96,7 +96,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         right.addView(tileRow(down, up, server))
         right.addView(tileRow(ping, jitter, loaded), lp().apply { topMargin = dp(10) })
 
-        verdict = text("Measures the speed this TV actually gets, using Cloudflare's speed test servers.",
+        verdict = text("Measures the speed this TV actually gets, using non-profit European speed test servers.",
             16f, Colors.TEXT).apply { minLines = 3 }
         right.addView(verdict, lp().apply { topMargin = dp(14) })
 
@@ -157,8 +157,12 @@ class MainActivity : Activity(), SpeedTest.Listener {
     // ---- SpeedTest.Listener (main thread) -----------------------------------
 
     override fun onServer(server: SpeedTest.Server) {
-        this.server.value.text = server.colo.ifEmpty { "?" }
-        this.server.sub.text = listOf(server.country, server.ip).filter { it.isNotEmpty() }.joinToString(" · ")
+        // Also called when a run falls back to the next server: start the figures over.
+        resetTiles()
+        idleSamples.clear()
+        loadedSamples.clear()
+        this.server.value.text = server.name
+        this.server.sub.text = listOf(server.city, server.ip).filter { it.isNotEmpty() }.joinToString(" · ")
     }
 
     override fun onPhase(phase: SpeedTest.Phase) {
@@ -213,7 +217,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
             time = System.currentTimeMillis(),
             downMbps = result.downMbps, upMbps = result.upMbps,
             pingMs = result.pingMs, loadedMs = maxOf(result.downLoadedMs, result.upLoadedMs),
-            vpn = n.vpn, network = n.transport, colo = result.server.colo,
+            vpn = n.vpn, network = n.transport, colo = result.server.name,
         ))
         renderHistory()
     }
@@ -236,7 +240,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         jitter.sub.text = "ms"
         loaded.sub.text = "ms"
         server.value.text = "—"
-        server.sub.text = "Cloudflare"
+        server.sub.text = "nearest of ${SpeedTest.SERVERS.size}"
         gauge.setColor(Colors.DOWN)
         gauge.setSpeed(0.0)
         gauge.setReading("—", "", "ready")
@@ -335,7 +339,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
             val bloat = maxOf(r.downLoadedMs, r.upLoadedMs) - r.pingMs
             if (bloat > 100) lines += "Latency rises by ${bloat.toInt()} ms under load, so expect slow starts and " +
                 "stutter on live streams and calls."
-            if (net.vpn) lines += "Measured through a VPN (exit ${r.server.colo.ifEmpty { "unknown" }}). " +
+            if (net.vpn) lines += "Measured through a VPN (exit IP ${r.server.ip.ifEmpty { "unknown" }}). " +
                 "Run again with it off to compare."
             return lines.joinToString("\n")
         }

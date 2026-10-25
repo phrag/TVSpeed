@@ -15,7 +15,7 @@ class History(ctx: Context) {
         val loadedMs: Double,
         val vpn: Boolean,
         val network: String,
-        val colo: String,
+        val colo: String,   // server name (a Cloudflare location code in older entries)
     )
 
     private val sp = ctx.getSharedPreferences("history", Context.MODE_PRIVATE)
