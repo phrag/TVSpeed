@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 320x180 launcher banner: dark gradient with a speedometer arc and needle. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path android:pathData="M0,0h320v180h-320z">
+        <aapt:attr xmlns:aapt="http://schemas.android.com/aapt" name="android:fillColor">
+            <gradient android:type="linear" android:startX="0" android:startY="0"
+                android:endX="320" android:endY="180"
+                android:startColor="#FF0F1B2D" android:endColor="#FF123B4A" />
+        </aapt:attr>
+    </path>
+    <!-- gauge track -->
+    <path android:pathData="M100,130 A60,60 0 1,1 220,130"
+        android:strokeColor="#33FFFFFF" android:strokeWidth="12" android:strokeLineCap="round" />
+    <!-- filled part -->
+    <path android:pathData="M100,130 A60,60 0 0,1 196,82"
+        android:strokeColor="#FF3DDC97" android:strokeWidth="12" android:strokeLineCap="round" />
+    <!-- needle -->
+    <path android:pathData="M160,130 L196,84"
+        android:strokeColor="#FFFFFFFF" android:strokeWidth="5" android:strokeLineCap="round" />
+    <path android:pathData="M160,130m-8,0a8,8 0 1,1 16,0a8,8 0 1,1 -16,0" android:fillColor="#FFFFFFFF" />
+</vector>

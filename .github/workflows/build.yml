@@ -1,0 +1,62 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write   # to move the "latest" tag and update its release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Caches Gradle + dependencies and validates the wrapper jar.
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The Android SDK is preinstalled on ubuntu-latest (ANDROID_HOME);
+      # AGP fetches platform 34 / build-tools on its own if they're missing.
+      - name: Build debug APK and lint
+        run: ./gradlew :app:assembleDebug :app:lintDebug --console=plain
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tvspeed-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+
+      # Rolling public download: https://github.com/<owner>/<repo>/releases/latest/download/tvspeed.apk
+      - name: Publish "latest" release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk tvspeed.apk
+          git tag -f latest
+          git push -f origin refs/tags/latest
+          notes="Debug build of ${GITHUB_SHA::7} from main, $(date -u +%F). Replaced automatically on every push to main."
+          if gh release view latest >/dev/null 2>&1; then
+            gh release edit latest --title "Latest build" --notes "$notes" --latest
+            gh release upload latest tvspeed.apk --clobber
+          else
+            gh release create latest tvspeed.apk --title "Latest build" --notes "$notes" --latest
+          fi
