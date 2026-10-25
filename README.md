@@ -16,7 +16,13 @@ It answers "why does this buffer?" rather than just "how fast is my line?":
   and whether a **VPN** is on. It also shows the server's city and country (also listed
   with each recent run) and the public IP the test exits from, so you can tell a VPN result
   from a line result.
-- **Recent runs** with VPN runs highlighted, so you can compare "VPN on" against "VPN off".
+- **Privacy line.** Every time the app opens it shows whether a VPN is up and the public IP
+  sites see (asked of a LibreSpeed server, no third-party lookup): green "Private: VPN on",
+  amber "Not private: no VPN", or "Offline" when an always-on VPN with "block connections
+  without VPN" has dropped.
+- **Recent runs** with VPN runs highlighted. The last 20 are kept on the TV; **All runs**
+  ranks each way out (VPN exit IP, or the plain line) by median speed, so you can see which
+  VPN server or protocol streams best.
 - **A verdict** in streaming terms, such as "Plenty for 4K60" or "Good for 1080p. 4K will
   likely buffer", plus a warning when latency rises under load.
 
@@ -56,6 +62,7 @@ adb shell am start -S -n com.phrag.tvspeed/.MainActivity --es server GARR
 ```
 
 Requests send `Accept-Encoding: identity` so the byte count is what crossed the wire.
+A dropped connection gets one retry on the same server before the run moves on.
 
 ## Build
 
@@ -66,6 +73,17 @@ Requests send `Accept-Encoding: identity` so the byte count is what crossed the 
 CI (`.github/workflows/build.yml`) builds and lints every push and pull request. Pushes
 to `main` also refresh a rolling **Latest build** release (`tvspeed.apk`). Builds are
 signed with the committed `app/debug.keystore`, so new APKs install over old ones.
+
+## Updates
+
+The app checks the rolling release's `version.json` at most once a day and offers a newer
+build. The download's size and sha256 must match, and the APK must be this app signed with
+the installed app's key (or a key it was rotated to) before it goes to Android's installer.
+**Updates** (top right) shows the installed build, checks now, and turns automatic checks
+off. Note that the signing key is committed, so the signer check only protects against a
+tampered or swapped file, not against someone who builds their own APK with that key.
+
+App data (`allowBackup="false"`) is never sent to cloud backup.
 
 ## Install
 
