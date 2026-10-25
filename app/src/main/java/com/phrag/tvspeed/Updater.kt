@@ -7,7 +7,9 @@ import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
 import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -30,12 +32,17 @@ import java.util.concurrent.atomic.AtomicBoolean
  * name, sha256 and size) to a fixed release tag ([BuildConfig.UPDATE_URL]).
  * [check] fetches that file; if it describes a newer commit than this build
  * ([BuildConfig.GIT_SHA] / [BuildConfig.GIT_TIME]) the user is offered the
- * update. The APK is downloaded, its size and sha256 verified, and handed to
+ * update. The APK is downloaded, its size and sha256 verified, its signing
+ * certificate checked against this app's own ([signerAccepted]), and handed to
  * PackageInstaller. Android then shows its own confirmation: without
  * device-owner rights an app can't update itself silently.
  *
  * Needs REQUEST_INSTALL_PACKAGES plus the user allowing "Install unknown apps"
  * for this app once. [UpdateReceiver] relays PackageInstaller's result.
+ *
+ * GitHub is asked at most once a day ([CHECK_EVERY_MS]); in between, the last
+ * answer is reused. [autoCheck] turns the automatic check off entirely, and
+ * [showSettings] offers "check now" for when it is.
  */
 class Updater(private val activity: Activity) {
 
@@ -50,29 +57,77 @@ class Updater(private val activity: Activity) {
     private val label: String get() = app.applicationInfo.loadLabel(app.packageManager).toString()
     private var offering = false   // update dialog showing; UI thread only
 
+    /** Whether [check] looks for updates on its own. Off: only [showSettings] → "Check now". */
+    var autoCheck: Boolean
+        get() = prefs.getBoolean("auto", true)
+        set(v) = prefs.edit().putBoolean("auto", v).apply()
+
     /**
      * Look for a newer build in the background; prompts on the UI thread if
      * there is one. Call from onResume: that also re-offers the update when
-     * the user comes back from granting "Install unknown apps". Does nothing
-     * while a check or download is already running.
+     * the user comes back from granting "Install unknown apps" (from the
+     * cached answer, without asking GitHub again). Does nothing while a check
+     * or download is already running, or when [autoCheck] is off.
+     *
+     * [manual]: the user asked. Always asks GitHub, ignores the snooze, and
+     * says so when there is nothing new or the check fails.
      */
-    fun check() {
-        if (!busy.compareAndSet(false, true)) return
+    fun check(manual: Boolean = false) {
+        if (!manual && !autoCheck) return
+        if (!busy.compareAndSet(false, true)) {
+            if (manual) toast("An update check is already running")
+            return
+        }
         Thread({
             try {
+                val now = System.currentTimeMillis()
+                val cached = prefs.getString("remote", null)
+                val fresh = now - prefs.getLong("checked_at", 0) in 0 until CHECK_EVERY_MS
                 val remote = try {
-                    parse(fetch(BuildConfig.UPDATE_URL + VERSION_FILE))
+                    if (!manual && fresh) {
+                        cached?.let(::parse) ?: return@Thread   // checked recently, nothing published
+                    } else {
+                        val json = fetch(BuildConfig.UPDATE_URL + VERSION_FILE)
+                        parse(json).also { prefs.edit().putString("remote", json).putLong("checked_at", now).apply() }
+                    }
                 } catch (e: Exception) {
                     Log.i(TAG, "update check failed: $e")   // offline, no release yet, … try next time
+                    if (manual) toast("Couldn't check for updates: ${e.message ?: e.javaClass.simpleName}")
                     return@Thread
                 }
-                if (!remote.isNewerThan(BuildConfig.GIT_SHA, BuildConfig.GIT_TIME)) return@Thread
-                if (snoozed(remote.sha)) return@Thread
+                if (!remote.isNewerThan(BuildConfig.GIT_SHA, BuildConfig.GIT_TIME)) {
+                    if (manual) toast("$label is up to date")
+                    return@Thread
+                }
+                if (!manual && snoozed(remote.sha)) return@Thread
                 activity.runOnUiThread { if (alive() && !offering) offer(remote) }
             } finally {
                 busy.set(false)
             }
         }, "updater-check").start()
+    }
+
+    /** "Updates" dialog: installed build, check now, automatic checks on/off. */
+    fun showSettings() {
+        val items = arrayOf("Check for updates now",
+            "Automatic update checks: ${if (autoCheck) "On" else "Off"}")
+        AlertDialog.Builder(activity, THEME)
+            .setTitle("Updates · ${short(BuildConfig.GIT_SHA)} · ${date(BuildConfig.GIT_TIME)}")
+            .setItems(items) { _, i ->
+                when (i) {
+                    0 -> check(manual = true)
+                    1 -> {
+                        autoCheck = !autoCheck
+                        toast(if (autoCheck) "Checks GitHub for updates at most once a day"
+                            else "Automatic update checks are off")
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun toast(msg: String) = activity.runOnUiThread {
+        if (alive()) Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
     }
 
     private fun offer(remote: Remote) {
@@ -112,7 +167,7 @@ class Updater(private val activity: Activity) {
                 download(remote, file, cancelled) { pct ->
                     activity.runOnUiThread { if (alive()) progress.setMessage("Downloading… $pct%") }
                 }
-                if (cancelled.get()) null else { commit(file); null }
+                if (cancelled.get()) null else { verifySigner(file); commit(file); null }
             } catch (e: Exception) {
                 Log.w(TAG, "update failed", e)
                 e.message ?: e.javaClass.simpleName
@@ -159,6 +214,46 @@ class Updater(private val activity: Activity) {
         if (read != remote.size || !hash.equals(remote.sha256, ignoreCase = true)) {
             throw IOException("download didn't match the release (try again in a minute)")
         }
+    }
+
+    /**
+     * Refuse an APK that isn't this app or isn't signed by this app's key (or
+     * a key it was rotated to). Android checks this too at install time; doing
+     * it here fails early with a clear message and never hands a foreign APK
+     * to PackageInstaller.
+     */
+    private fun verifySigner(file: File) {
+        val pm = app.packageManager
+        val archive = archiveInfo(pm, file) ?: throw IOException("the download isn't a valid app")
+        if (archive.packageName != app.packageName) throw IOException("the download is a different app")
+        val installed = signers(installedInfo(pm)) ?: throw IOException("can't read this app's signature")
+        val incoming = signers(archive) ?: throw IOException("the download isn't signed")
+        if (!signerAccepted(installed.first, incoming.first, incoming.second)) {
+            throw IOException("the download isn't signed with this app's key")
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun archiveInfo(pm: PackageManager, file: File): PackageInfo? =
+        pm.getPackageArchiveInfo(file.path, SIGNATURE_FLAGS)
+
+    @Suppress("DEPRECATION")
+    private fun installedInfo(pm: PackageManager): PackageInfo = pm.getPackageInfo(app.packageName, SIGNATURE_FLAGS)
+
+    /** SHA-256 of (current signers, every signer in the rotation history incl. current); null if unreadable. */
+    @Suppress("DEPRECATION")
+    private fun signers(info: PackageInfo): Pair<Set<String>, Set<String>>? {
+        if (Build.VERSION.SDK_INT >= 28) {
+            val si = info.signingInfo
+            if (si != null) {
+                val current = si.apkContentsSigners.orEmpty().map { sha256(it.toByteArray()) }.toSet()
+                val history = if (si.hasMultipleSigners()) current
+                    else si.signingCertificateHistory.orEmpty().map { sha256(it.toByteArray()) }.toSet() + current
+                if (current.isNotEmpty()) return current to history
+            }
+        }
+        val legacy = info.signatures.orEmpty().map { sha256(it.toByteArray()) }.toSet()
+        return if (legacy.isEmpty()) null else legacy to legacy
     }
 
     /** Hand the verified APK to PackageInstaller; [UpdateReceiver] gets the outcome. */
@@ -237,6 +332,10 @@ class Updater(private val activity: Activity) {
         private const val TAG = "Updater"
         private const val VERSION_FILE = "version.json"
         private const val SNOOZE_MS = 24 * 60 * 60 * 1000L
+        private const val CHECK_EVERY_MS = 24 * 60 * 60 * 1000L
+        @Suppress("DEPRECATION")
+        private val SIGNATURE_FLAGS = PackageManager.GET_SIGNATURES or
+            (if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else 0)
         private const val THEME = android.R.style.Theme_DeviceDefault_Dialog_Alert
 
         /** Process-wide, so a recreated activity can't start a second check or download. */
@@ -258,6 +357,16 @@ class Updater(private val activity: Activity) {
             require(r.size > 0 && r.time > 0) { "bad size/time" }
             return r
         }
+
+        /**
+         * An update is accepted when it's signed by exactly the installed app's
+         * signers, or (key rotation) its signing history includes all of them.
+         */
+        fun signerAccepted(installed: Set<String>, incoming: Set<String>, incomingHistory: Set<String>) =
+            installed.isNotEmpty() && (incoming == installed || incomingHistory.containsAll(installed))
+
+        private fun sha256(bytes: ByteArray) =
+            MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
         private fun short(sha: String) = sha.take(7)
         private fun date(epochSec: Long) =

@@ -35,3 +35,10 @@ class UpdaterTest {
         Updater.parse(json.replace("b".repeat(64), "nothex"))
     }
 }
+
+class SignerTest {
+    @Test fun sameSignerAccepted() = org.junit.Assert.assertTrue(Updater.signerAccepted(setOf("a"), setOf("a"), setOf("a")))
+    @Test fun otherSignerRefused() = org.junit.Assert.assertFalse(Updater.signerAccepted(setOf("a"), setOf("b"), setOf("b")))
+    @Test fun rotatedSignerAccepted() = org.junit.Assert.assertTrue(Updater.signerAccepted(setOf("a"), setOf("b"), setOf("a", "b")))
+    @Test fun unreadableInstalledRefused() = org.junit.Assert.assertFalse(Updater.signerAccepted(emptySet(), emptySet(), emptySet()))
+}

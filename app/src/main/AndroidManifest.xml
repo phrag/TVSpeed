@@ -19,7 +19,7 @@
         android:label="TV Speed"
         android:banner="@drawable/banner"
         android:icon="@drawable/banner"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
 
         <activity

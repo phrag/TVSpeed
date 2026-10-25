@@ -118,13 +118,24 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
             if (ranked.isEmpty()) throw IOException("No speed-test server reachable")
             val failures = ArrayList<String>()
             for ((backend, addr) in ranked) {
-                try {
-                    measure(backend, addr)
-                    return
-                } catch (e: IOException) {
-                    if (cancelled.get()) return
-                    Log.w(TAG, "${backend.name} failed, trying the next server", e)
-                    failures += "${backend.name}: ${e.message}"
+                // A dropped connection gets one more try on the same server; a refusal
+                // (rate limit) goes straight to the next one.
+                for (attempt in 1..2) {
+                    try {
+                        measure(backend, addr)
+                        return
+                    } catch (e: IOException) {
+                        if (cancelled.get()) return
+                        val refused = e is HttpError && e.refused || e.message.orEmpty().startsWith("refused")
+                        if (attempt == 1 && !refused) {
+                            Log.w(TAG, "${backend.name} failed, retrying once", e)
+                            SystemClock.sleep(RETRY_DELAY_MS)
+                            continue
+                        }
+                        Log.w(TAG, "${backend.name} failed, trying the next server", e)
+                        failures += "${backend.name}: ${e.message}"
+                        break
+                    }
                 }
             }
             throw IOException(failures.joinToString("; ", prefix = "every server failed (") + ")")
@@ -355,15 +366,6 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
         }
     }
 
-    private fun open(url: String) = (URL(url).openConnection() as HttpURLConnection).apply {
-        connectTimeout = 5_000
-        readTimeout = 10_000
-        useCaches = false
-        // Count the bytes on the wire, not a decompressed body.
-        setRequestProperty("Accept-Encoding", "identity")
-        setRequestProperty("User-Agent", "TVSpeed/${BuildConfig.VERSION_NAME}")
-    }
-
     /** Our public IP as the server sees it; empty if the server has no IP endpoint. */
     private fun publicIp(b: Backend): String {
         val url = b.ip ?: return ""
@@ -422,6 +424,40 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
         private const val WARMUP_MS = 2_000L
         private const val SAMPLE_MS = 200L
         private const val BUF = 64 * 1024
+
+        private const val RETRY_DELAY_MS = 1_000L
+
+        private fun open(url: String) = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 5_000
+            readTimeout = 10_000
+            useCaches = false
+            // Count the bytes on the wire, not a decompressed body.
+            setRequestProperty("Accept-Encoding", "identity")
+            setRequestProperty("User-Agent", "TVSpeed/${BuildConfig.VERSION_NAME}")
+        }
+
+        /**
+         * The public IP this TV reaches the internet from (the VPN exit, if one is up),
+         * asked of the LibreSpeed servers in turn; null if none answers. Blocking.
+         */
+        fun exitIp(): Pair<Backend, String>? {
+            for (b in SERVERS) {
+                val url = b.ip ?: continue
+                try {
+                    val c = open(url)
+                    try {
+                        if (c.responseCode != HttpURLConnection.HTTP_OK) continue
+                        val ip = JSONObject(c.inputStream.bufferedReader().readText()).optString("processedString")
+                        if (ip.isNotBlank()) return b to ip.trim()
+                    } finally {
+                        c.disconnect()
+                    }
+                } catch (e: Exception) {
+                    Log.i(TAG, "exit IP from ${b.name} failed: $e")
+                }
+            }
+            return null
+        }
 
         private fun mbps(bytes: Long, ms: Long) = if (ms <= 0) 0.0 else bytes * 8.0 / ms / 1_000.0
 
