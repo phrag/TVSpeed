@@ -43,6 +43,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
     private var phase: SpeedTest.Phase? = null
     private val idleSamples = ArrayList<Double>()
     private val loadedSamples = ArrayList<Double>()
+    private val updater by lazy { Updater(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -116,6 +117,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
     override fun onResume() {
         super.onResume()
         net = NetInfo.read(this).also { networkLine.text = it.summary }
+        updater.check()   // offers a newer GitHub build, if any
     }
 
     override fun onStop() {
