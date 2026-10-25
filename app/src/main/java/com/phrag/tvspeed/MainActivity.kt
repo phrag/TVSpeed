@@ -163,8 +163,8 @@ class MainActivity : Activity(), SpeedTest.Listener {
         resetTiles()
         idleSamples.clear()
         loadedSamples.clear()
-        this.server.value.text = server.name
-        this.server.sub.text = listOf(server.city, server.ip).filter { it.isNotEmpty() }.joinToString(" · ")
+        this.server.value.text = server.city
+        this.server.sub.text = "${server.country} · ${server.name}"
     }
 
     override fun onPhase(phase: SpeedTest.Phase) {
@@ -219,7 +219,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
             time = System.currentTimeMillis(),
             downMbps = result.downMbps, upMbps = result.upMbps,
             pingMs = result.pingMs, loadedMs = maxOf(result.downLoadedMs, result.upLoadedMs),
-            vpn = n.vpn, network = n.transport, colo = result.server.name,
+            vpn = n.vpn, network = n.transport, place = result.server.place,
         ))
         renderHistory()
     }
@@ -267,12 +267,12 @@ class MainActivity : Activity(), SpeedTest.Listener {
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                 }, LinearLayout.LayoutParams(0, WRAP_CONTENT, weight))
-            cell(whenText, 1f, Colors.TEXT2)
-            cell("↓ ${fmtMbps(r.downMbps)}", 1f, Colors.DOWN)
-            cell("↑ ${fmtMbps(r.upMbps)}", 0.9f, Colors.UP)
-            cell("${fmtMs(r.pingMs)} / ${fmtMs(r.loadedMs)} ms", 1.3f, Colors.TEXT2)
-            cell(listOf(r.network, if (r.vpn) "VPN" else "", r.colo).filter { it.isNotEmpty() }.joinToString(" · "),
-                1.7f, if (r.vpn) Colors.WARN else Colors.TEXT2)
+            cell(whenText, 0.9f, Colors.TEXT2)
+            cell("↓ ${fmtMbps(r.downMbps)}", 0.8f, Colors.DOWN)
+            cell("↑ ${fmtMbps(r.upMbps)}", 0.7f, Colors.UP)
+            cell("${fmtMs(r.pingMs)} / ${fmtMs(r.loadedMs)} ms", 1.2f, Colors.TEXT2)
+            cell(listOf(r.network, if (r.vpn) "VPN" else "", r.place).filter { it.isNotEmpty() }.joinToString(" · "),
+                2.4f, if (r.vpn) Colors.WARN else Colors.TEXT2)
             historyRows.addView(row)
         }
     }

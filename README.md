@@ -13,8 +13,9 @@ It answers "why does this buffer?" rather than just "how fast is my line?":
   (bufferbloat, or a congested VPN tunnel) is a common cause of buffering on a connection
   that looks fast.
 - **What it's measuring.** The app shows Wi-Fi vs Ethernet, band, link rate and signal,
-  and whether a **VPN** is on. It also shows the server used and the public IP the test
-  exits from, so you can tell a VPN result from a line result.
+  and whether a **VPN** is on. It also shows the server's city and country (also listed
+  with each recent run) and the public IP the test exits from, so you can tell a VPN result
+  from a line result.
 - **Recent runs** with VPN runs highlighted, so you can compare "VPN on" against "VPN off".
 - **A verdict** in streaming terms, such as "Plenty for 4K60" or "Good for 1080p. 4K will
   likely buffer", plus a warning when latency rises under load.

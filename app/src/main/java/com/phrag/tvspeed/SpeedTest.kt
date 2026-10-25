@@ -52,10 +52,12 @@ class SpeedTest(private val listener: Listener) {
     )
 
     /** The server a run uses, and the public IP it sees us at (VPN exit or line). */
-    data class Server(val name: String, val city: String, val ip: String)
+    data class Server(val name: String, val city: String, val country: String, val ip: String) {
+        val place get() = "$city, $country"
+    }
 
     /** A LibreSpeed backend: `garbage.php` (download), `empty.php` (upload), `getIP.php`. */
-    class Backend(val name: String, val city: String, val base: String) {
+    class Backend(val name: String, val city: String, val country: String, val base: String) {
         val host: String get() = URL(base).host
     }
 
@@ -138,7 +140,7 @@ class SpeedTest(private val listener: Listener) {
 
     /** The whole run against one server; throws if it refuses or fails so [run] can fall back. */
     private fun measure(backend: Backend, addr: InetAddress) {
-        val server = Server(backend.name, backend.city, publicIp(backend))
+        val server = Server(backend.name, backend.city, backend.country, publicIp(backend))
         post { onServer(server) }
 
         post { onPhase(Phase.LATENCY) }
@@ -369,10 +371,10 @@ class SpeedTest(private val listener: Listener) {
          * Each handles 25 MiB downloads and 8 MB uploads over HTTPS.
          */
         val SERVERS = listOf(
-            Backend("CESNET", "Prague", "https://speedtest.cesnet.cz/backend"),         // Czech research network
-            Backend("CZ.NIC", "Prague", "https://librespeed.turris.cz/backend"),        // .cz registry, non-profit
-            Backend("GARR", "Rome", "https://st-be-rm2.infra.garr.it"),                 // Italian research network
-            Backend("SOX", "Belgrade", "https://speedtest1.sox.rs/librespeed/backend"), // Serbian internet exchange
+            Backend("CESNET", "Prague", "Czechia", "https://speedtest.cesnet.cz/backend"),         // Czech research network
+            Backend("CZ.NIC", "Prague", "Czechia", "https://librespeed.turris.cz/backend"),        // .cz registry, non-profit
+            Backend("GARR", "Rome", "Italy", "https://st-be-rm2.infra.garr.it"),                 // Italian research network
+            Backend("SOX", "Belgrade", "Serbia", "https://speedtest1.sox.rs/librespeed/backend"), // Serbian internet exchange
         )
 
         private const val PING_SAMPLES = 20

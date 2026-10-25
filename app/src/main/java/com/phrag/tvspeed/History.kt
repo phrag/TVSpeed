@@ -15,7 +15,7 @@ class History(ctx: Context) {
         val loadedMs: Double,
         val vpn: Boolean,
         val network: String,
-        val colo: String,   // server name (a Cloudflare location code in older entries)
+        val place: String,   // where the test server is: "Rome, Italy"
     )
 
     private val sp = ctx.getSharedPreferences("history", Context.MODE_PRIVATE)
@@ -32,7 +32,8 @@ class History(ctx: Context) {
                 loadedMs = o.optDouble("loaded", 0.0),
                 vpn = o.optBoolean("vpn"),
                 network = o.optString("network"),
-                colo = o.optString("colo"),
+                // Older runs stored a Cloudflare location code ("colo") instead.
+                place = o.optString("place").ifEmpty { coloPlace(o.optString("colo")) },
             )
         }
     } catch (e: Exception) {
@@ -46,12 +47,28 @@ class History(ctx: Context) {
             arr.put(JSONObject()
                 .put("time", it.time).put("down", it.downMbps).put("up", it.upMbps)
                 .put("ping", it.pingMs).put("loaded", it.loadedMs).put("vpn", it.vpn)
-                .put("network", it.network).put("colo", it.colo))
+                .put("network", it.network).put("place", it.place))
         }
         sp.edit().putString("runs", arr.toString()).apply()
     }
 
     companion object {
         const val MAX = 4
+
+        /** Cloudflare location codes (IATA) that older runs stored; unknown codes stay as they are. */
+        fun coloPlace(code: String): String = COLOS[code] ?: code
+
+        private val COLOS = mapOf(
+            "AMS" to "Amsterdam, Netherlands", "ARN" to "Stockholm, Sweden", "ATH" to "Athens, Greece",
+            "BCN" to "Barcelona, Spain", "BER" to "Berlin, Germany", "BRU" to "Brussels, Belgium",
+            "BUD" to "Budapest, Hungary", "CDG" to "Paris, France", "CPH" to "Copenhagen, Denmark",
+            "DUB" to "Dublin, Ireland", "DUS" to "Düsseldorf, Germany", "FRA" to "Frankfurt, Germany",
+            "HAM" to "Hamburg, Germany", "HEL" to "Helsinki, Finland", "LHR" to "London, UK",
+            "LIS" to "Lisbon, Portugal", "MAD" to "Madrid, Spain", "MAN" to "Manchester, UK",
+            "MRS" to "Marseille, France", "MUC" to "Munich, Germany", "MXP" to "Milan, Italy",
+            "FCO" to "Rome, Italy", "OSL" to "Oslo, Norway", "PRG" to "Prague, Czechia",
+            "SOF" to "Sofia, Bulgaria", "STR" to "Stuttgart, Germany", "TXL" to "Berlin, Germany",
+            "VIE" to "Vienna, Austria", "WAW" to "Warsaw, Poland", "ZRH" to "Zurich, Switzerland",
+        )
     }
 }
