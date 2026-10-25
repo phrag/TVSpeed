@@ -107,6 +107,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         right.addView(historyRows)
         root.addView(right, LinearLayout.LayoutParams(0, MATCH_PARENT, 1.25f))
 
+        Updater(this).check()   // offers a newer GitHub build, if any
         setContentView(root)
         resetTiles()
         renderHistory()
