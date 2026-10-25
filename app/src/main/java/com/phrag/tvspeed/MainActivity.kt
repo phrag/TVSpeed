@@ -249,7 +249,8 @@ class MainActivity : Activity(), SpeedTest.Listener {
         up.value.text = fmtMbps(result.upMbps)
         ping.value.text = fmtMs(result.pingMs)
         jitter.value.text = fmtMs(result.jitterMs)
-        loaded.value.text = fmtMs(result.downLoadedMs)
+        // Worst direction, as in the history row and the verdict, so the three agree.
+        loaded.value.text = fmtMs(maxOf(result.downLoadedMs, result.upLoadedMs))
         loaded.sub.text = "↓ ${fmtMs(result.downLoadedMs)} · ↑ ${fmtMs(result.upLoadedMs)} ms"
         gauge.setColor(Colors.DOWN)
         gauge.setSpeed(result.downMbps)
