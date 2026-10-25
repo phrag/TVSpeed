@@ -48,23 +48,35 @@ class Updater(private val activity: Activity) {
     private val app = activity.applicationContext
     private val prefs = app.getSharedPreferences("updater", Context.MODE_PRIVATE)
     private val label: String get() = app.applicationInfo.loadLabel(app.packageManager).toString()
+    private var offering = false   // update dialog showing; UI thread only
 
-    /** Look for a newer build in the background; prompts on the UI thread if there is one. */
+    /**
+     * Look for a newer build in the background; prompts on the UI thread if
+     * there is one. Call from onResume: that also re-offers the update when
+     * the user comes back from granting "Install unknown apps". Does nothing
+     * while a check or download is already running.
+     */
     fun check() {
+        if (!busy.compareAndSet(false, true)) return
         Thread({
-            val remote = try {
-                parse(fetch(BuildConfig.UPDATE_URL + VERSION_FILE))
-            } catch (e: Exception) {
-                Log.i(TAG, "update check failed: $e")   // offline, no release yet, … try next launch
-                return@Thread
+            try {
+                val remote = try {
+                    parse(fetch(BuildConfig.UPDATE_URL + VERSION_FILE))
+                } catch (e: Exception) {
+                    Log.i(TAG, "update check failed: $e")   // offline, no release yet, … try next time
+                    return@Thread
+                }
+                if (!remote.isNewerThan(BuildConfig.GIT_SHA, BuildConfig.GIT_TIME)) return@Thread
+                if (snoozed(remote.sha)) return@Thread
+                activity.runOnUiThread { if (alive() && !offering) offer(remote) }
+            } finally {
+                busy.set(false)
             }
-            if (!remote.isNewerThan(BuildConfig.GIT_SHA, BuildConfig.GIT_TIME)) return@Thread
-            if (snoozed(remote.sha)) return@Thread
-            activity.runOnUiThread { if (alive()) offer(remote) }
         }, "updater-check").start()
     }
 
     private fun offer(remote: Remote) {
+        offering = true
         AlertDialog.Builder(activity, THEME)
             .setTitle("Update available")
             .setMessage("A newer build of $label is available.\n\n" +
@@ -72,12 +84,18 @@ class Updater(private val activity: Activity) {
                 "New: ${short(remote.sha)} · ${date(remote.time)} · ${"%.1f".format(remote.size / 1e6)} MB")
             .setPositiveButton("Install") { _, _ -> install(remote) }
             .setNegativeButton("Later") { _, _ -> snooze(remote.sha) }
+            .setOnDismissListener { offering = false }
             .show()
     }
 
     private fun install(remote: Remote) {
         if (!app.packageManager.canRequestPackageInstalls()) {
             askForInstallPermission()
+            return
+        }
+        // A download from an earlier screen may still be finishing (or cancelling).
+        if (!busy.compareAndSet(false, true)) {
+            Toast.makeText(activity, "An update is already in progress", Toast.LENGTH_SHORT).show()
             return
         }
         val cancelled = AtomicBoolean(false)
@@ -88,8 +106,9 @@ class Updater(private val activity: Activity) {
             .setCancelable(false)
             .show()
         Thread({
-            val file = File(app.cacheDir, "update.apk")
+            var file: File? = null
             val error = try {
+                file = File.createTempFile("update", ".apk", app.cacheDir)
                 download(remote, file, cancelled) { pct ->
                     activity.runOnUiThread { if (alive()) progress.setMessage("Downloading… $pct%") }
                 }
@@ -97,6 +116,9 @@ class Updater(private val activity: Activity) {
             } catch (e: Exception) {
                 Log.w(TAG, "update failed", e)
                 e.message ?: e.javaClass.simpleName
+            } finally {
+                file?.delete()   // PackageInstaller has its own copy by now
+                busy.set(false)
             }
             activity.runOnUiThread {
                 if (!alive()) return@runOnUiThread
@@ -135,7 +157,6 @@ class Updater(private val activity: Activity) {
         val hash = digest.digest().joinToString("") { "%02x".format(it) }
         // A mismatch usually means CI is replacing the APK right now; the next launch retries.
         if (read != remote.size || !hash.equals(remote.sha256, ignoreCase = true)) {
-            file.delete()
             throw IOException("download didn't match the release (try again in a minute)")
         }
     }
@@ -145,22 +166,28 @@ class Updater(private val activity: Activity) {
         val installer = app.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(app.packageName)
-            // Android 12+: no prompt once this app is the installer of record.
+            // Android 12+: no prompt once this app is the installer of record
+            // (needs UPDATE_PACKAGES_WITHOUT_USER_ACTION in the manifest).
             if (Build.VERSION.SDK_INT >= 31) setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
         }
         val id = installer.createSession(params)
-        installer.openSession(id).use { session ->
-            session.openWrite("base.apk", 0, file.length()).use { out ->
-                file.inputStream().use { it.copyTo(out) }
-                session.fsync(out)
+        try {
+            installer.openSession(id).use { session ->
+                session.openWrite("base.apk", 0, file.length()).use { out ->
+                    file.inputStream().use { it.copyTo(out) }
+                    session.fsync(out)
+                }
+                // Mutable: PackageInstaller fills in the status extras.
+                val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                    (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+                val status = PendingIntent.getBroadcast(app, id, Intent(app, UpdateReceiver::class.java), flags)
+                session.commit(status.intentSender)
             }
-            // Mutable: PackageInstaller fills in the status extras.
-            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
-                (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
-            val status = PendingIntent.getBroadcast(app, id, Intent(app, UpdateReceiver::class.java), flags)
-            session.commit(status.intentSender)
+        } catch (e: Exception) {
+            // Not handed off: free the session and its staged copy rather than leak them.
+            try { installer.abandonSession(id) } catch (s: Exception) { e.addSuppressed(s) }
+            throw e
         }
-        file.delete()
     }
 
     private fun askForInstallPermission() {
@@ -211,6 +238,9 @@ class Updater(private val activity: Activity) {
         private const val VERSION_FILE = "version.json"
         private const val SNOOZE_MS = 24 * 60 * 60 * 1000L
         private const val THEME = android.R.style.Theme_DeviceDefault_Dialog_Alert
+
+        /** Process-wide, so a recreated activity can't start a second check or download. */
+        private val busy = AtomicBoolean(false)
 
         /** Parse and sanity-check version.json. */
         fun parse(json: String): Remote {
