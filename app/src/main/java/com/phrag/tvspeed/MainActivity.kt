@@ -212,7 +212,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
     override fun onPhase(phase: SpeedTest.Phase) {
         this.phase = phase
         val color = when (phase) {
-            SpeedTest.Phase.DOWNLOAD -> Colors.DOWN
+            SpeedTest.Phase.DOWNLOAD, SpeedTest.Phase.STREAM -> Colors.DOWN
             SpeedTest.Phase.UPLOAD -> Colors.UP
             else -> Colors.PING
         }
@@ -238,14 +238,18 @@ class MainActivity : Activity(), SpeedTest.Listener {
     override fun onSpeed(phase: SpeedTest.Phase, mbps: Double) {
         gauge.setSpeed(mbps)
         gauge.setReading(fmtMbps(mbps), "Mbps", phase.label)
-        val tile = if (phase == SpeedTest.Phase.DOWNLOAD) down else up
-        tile.value.text = fmtMbps(mbps)
+        when (phase) {
+            SpeedTest.Phase.DOWNLOAD -> down.value.text = fmtMbps(mbps)
+            SpeedTest.Phase.STREAM -> down.sub.text = "Mbps · 1 stream ${fmtMbps(mbps)}"
+            else -> up.value.text = fmtMbps(mbps)
+        }
     }
 
     override fun onDone(result: SpeedTest.Result) {
         val n = net ?: NetInfo.read(this)
         finishRun()
         down.value.text = fmtMbps(result.downMbps)
+        down.sub.text = "Mbps · 1 stream ${fmtMbps(result.streamMbps)}"
         up.value.text = fmtMbps(result.upMbps)
         ping.value.text = fmtMs(result.pingMs)
         jitter.value.text = fmtMs(result.jitterMs)
@@ -443,20 +447,30 @@ class MainActivity : Activity(), SpeedTest.Listener {
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     companion object {
+        /** Below this share of the parallel figure, the verdict says single streams are held back. */
+        private const val SINGLE_STREAM_SHORTFALL = 0.6
+
         fun fmtMbps(v: Double) = if (v < 10) "%.1f".format(v) else "%.0f".format(v)
         fun fmtMs(v: Double) = if (v <= 0) "—" else "%.0f".format(v)
 
-        /** What the numbers mean for streaming on this TV. */
+        /**
+         * What the numbers mean for streaming on this TV. Judged on the single-stream
+         * figure: video apps fetch over one or two connections, not six.
+         */
         fun verdictFor(r: SpeedTest.Result, net: NetInfo): String {
             val lines = ArrayList<String>()
+            val s = r.streamMbps
             lines += when {
-                r.downMbps >= 80 -> "Plenty for 4K60 streaming, even at the highest bitrates."
-                r.downMbps >= 25 -> "Good for 4K streaming. Very high-bitrate 4K60 may need more."
-                r.downMbps >= 15 -> "Enough for 4K on most services; high-bitrate 4K60 may buffer."
-                r.downMbps >= 5 -> "Good for 1080p. 4K will likely buffer."
-                r.downMbps >= 3 -> "OK for 720p / SD video only."
+                s >= 80 -> "Plenty for 4K60 streaming, even at the highest bitrates."
+                s >= 25 -> "Good for 4K streaming. Very high-bitrate 4K60 may need more."
+                s >= 15 -> "Enough for 4K on most services; high-bitrate 4K60 may buffer."
+                s >= 5 -> "Good for 1080p. 4K will likely buffer."
+                s >= 3 -> "OK for 720p / SD video only."
                 else -> "Too slow for smooth HD video."
             }
+            if (s < r.downMbps * SINGLE_STREAM_SHORTFALL) lines += "One connection, as a video app uses, got only " +
+                "${fmtMbps(s)} of the ${fmtMbps(r.downMbps)} Mbps the line carries" +
+                (if (net.vpn) ": VPN tunnels often hold single connections back." else ".")
             val bloat = maxOf(r.downLoadedMs, r.upLoadedMs) - r.pingMs
             if (bloat > 100) lines += "Latency rises by ${bloat.toInt()} ms under load, so expect slow starts and " +
                 "stutter on live streams and calls."

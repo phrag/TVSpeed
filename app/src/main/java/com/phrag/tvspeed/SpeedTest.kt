@@ -25,14 +25,18 @@ import org.json.JSONObject
  * connection (VPN exit included) is used; if it refuses (rate limit) or
  * fails, the run starts over on the next.
  *
- * Phases: idle latency → download → upload. Latency is TCP connect time to
- * the edge (exactly one round trip, no server processing), sampled again
- * while each transfer runs to show how much the connection's latency grows
- * under load — the usual cause of buffering on a "fast" line or a VPN.
+ * Phases: idle latency → download → single stream → upload. Latency is TCP
+ * connect time to the edge (exactly one round trip, no server processing),
+ * sampled again while the download and upload run to show how much the
+ * connection's latency grows under load — the usual cause of buffering on a "fast" line or a VPN.
  *
  * Throughput uses several parallel streams (one TCP stream under-reports,
  * badly so through a VPN), drops the first seconds of TCP slow start and
  * reports the average over the rest. Packet loss can't be seen over HTTP.
+ *
+ * The parallel figure is the line's capacity, but streaming apps fetch video
+ * over one or two connections, so a short single-stream download follows it:
+ * that is the figure that says whether video will buffer.
  *
  * [Listener] callbacks arrive on the main thread and stop after [cancel].
  * [only] names one server from [SERVERS] to test against, with no fallback.
@@ -40,7 +44,7 @@ import org.json.JSONObject
 class SpeedTest(private val listener: Listener, private val only: String? = null) {
 
     enum class Phase(val label: String) {
-        CONNECTING("Connecting"), LATENCY("Latency"), DOWNLOAD("Download"), UPLOAD("Upload")
+        CONNECTING("Connecting"), LATENCY("Latency"), DOWNLOAD("Download"), STREAM("Single stream"), UPLOAD("Upload")
     }
 
     data class Result(
@@ -48,7 +52,10 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
         val jitterMs: Double,
         val downLoadedMs: Double,
         val upLoadedMs: Double,
+        /** Parallel streams: what the line can carry. */
         val downMbps: Double,
+        /** One stream, as a video app fetches: what playback gets. */
+        val streamMbps: Double,
         val upMbps: Double,
         val server: Server,
     )
@@ -197,6 +204,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
         if (idle.isEmpty()) throw IOException("no reply")
 
         val down = transfer(Phase.DOWNLOAD, addr, DOWN_STREAMS) { downloadLoop(backend, it) }
+        val stream = transfer(Phase.STREAM, addr, 1, STREAM_MS, probe = false) { downloadLoop(backend, it) }
         val up = transfer(Phase.UPLOAD, addr, UP_STREAMS) { uploadLoop(backend, it) }
         if (cancelled.get()) throw InterruptedException()
         val result = Result(
@@ -205,6 +213,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
             downLoadedMs = down.loadedMs,
             upLoadedMs = up.loadedMs,
             downMbps = down.mbps,
+            streamMbps = stream.mbps,
             upMbps = up.mbps,
             server = server,
         )
@@ -237,10 +246,13 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
     }
 
     /**
-     * Run [streams] copies of [loop] for [TRANSFER_MS], reporting live speed,
-     * plus a latency prober. Returns the average after [WARMUP_MS].
+     * Run [streams] copies of [loop] for [durationMs], reporting live speed,
+     * plus a latency prober if [probe]. Returns the average after [WARMUP_MS].
      */
-    private fun transfer(phase: Phase, addr: InetAddress, streams: Int, loop: (Streams) -> Unit): Transfer {
+    private fun transfer(
+        phase: Phase, addr: InetAddress, streams: Int, durationMs: Long = TRANSFER_MS, probe: Boolean = true,
+        loop: (Streams) -> Unit,
+    ): Transfer {
         if (cancelled.get()) return Transfer(0.0, 0.0)
         post { onPhase(phase) }
         val s = Streams()
@@ -256,7 +268,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
             }
         }, "tvspeed-probe")
         workers.forEach { it.start() }
-        prober.start()
+        if (probe) prober.start()
 
         val t0 = SystemClock.elapsedRealtime()
         var warmT = 0L
@@ -278,7 +290,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
                     warmT = now
                     warmBytes = b
                 }
-                if (now - t0 >= TRANSFER_MS || s.refused.get() != null) break
+                if (now - t0 >= durationMs || s.refused.get() != null) break
             }
         } finally {
             s.stop.set(true)
@@ -287,7 +299,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
         val end = SystemClock.elapsedRealtime()
         val total = s.bytes.get()
         workers.forEach { it.join(2_000) }
-        prober.join(2_000)
+        if (probe) prober.join(2_000)
         if (cancelled.get()) throw InterruptedException()
         s.refused.get()?.let { throw IOException(refusedMessage(it)) }
         if (total == 0L) throw IOException("${phase.label} failed: no data transferred (${s.errors.get()} errors: ${s.firstError.get()})")
@@ -424,6 +436,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
         private const val RANK_SAMPLES = 5   // connect times per address when picking the nearest
         private const val UP_BYTES = 8_000_000L
         private const val TRANSFER_MS = 12_000L
+        private const val STREAM_MS = 8_000L   // single-stream phase; warm-up is cut from it too
         private const val WARMUP_MS = 2_000L
         private const val SAMPLE_MS = 200L
         private const val BUF = 64 * 1024
