@@ -45,6 +45,10 @@ class MainActivity : Activity(), SpeedTest.Listener {
     private var chosen: String?
         get() = picks.getString("name", null)?.takeIf { n -> SpeedTest.SERVERS.any { it.name == n } }
         set(v) = picks.edit().putString("name", v).apply()
+    /** The server the last automatic run used; Auto keeps it while nothing is nearer. */
+    private var lastAuto: String?
+        get() = picks.getString("auto", null)
+        set(v) = picks.edit().putString("auto", v).apply()
     private val tags by lazy { getSharedPreferences("tag", Context.MODE_PRIVATE) }
     /** What the user says this run's VPN server or protocol is; saved with each run. Empty = none. */
     private var tag: String
@@ -66,6 +70,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
     private lateinit var historyRows: LinearLayout
 
     private var test: SpeedTest? = null
+    private var autoRun = false
     private var net: NetInfo? = null
     private var phase: SpeedTest.Phase? = null
     private val idleSamples = ArrayList<Double>()
@@ -215,7 +220,9 @@ class MainActivity : Activity(), SpeedTest.Listener {
         button.text = "Stop"
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // adb: am start -n com.phrag.tvspeed/.MainActivity --es server GARR (see README)
-        test = SpeedTest(this, intent.getStringExtra("server") ?: chosen).also { it.start() }
+        val only = intent.getStringExtra("server") ?: chosen
+        autoRun = only == null
+        test = SpeedTest(this, only, lastAuto).also { it.start() }
     }
 
     private fun stopTest(message: String) {
@@ -285,6 +292,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
     override fun onDone(result: SpeedTest.Result) {
         val n = net ?: NetInfo.read(this)
         finishRun()
+        if (autoRun) lastAuto = result.server.name
         down.value.text = fmtMbps(result.downMbps)
         down.sub.text = "Mbps · 1 stream ${fmtMbps(result.streamMbps)}"
         up.value.text = fmtMbps(result.upMbps)

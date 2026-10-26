@@ -42,7 +42,10 @@ has no non-profit servers outside Europe): no key, no ads or tracking, and no CD
 
 **Automatic** (the default) picks the server nearest to the connection being tested, by
 the median of five TCP connect times to each of its addresses (IPv6 and IPv4). Behind a
-VPN that means nearest to the VPN exit. If that server refuses (HTTP 429/403, as rate
+VPN that means nearest to the VPN exit. Servers whose connect times are within 3 ms (or
+15%) of the nearest count as equally near; among them Auto keeps the server its last run
+used, or else takes the one that answers an HTTPS request fastest, so repeat runs on the
+same connection use the same server. If that server refuses (HTTP 429/403, as rate
 limits on shared VPN exits do) or fails, the run starts over on the next one. To use one
 server every time, select the **Server** tile and pick it; the choice is remembered.
 
