@@ -103,7 +103,11 @@ class MainActivity : Activity(), SpeedTest.Listener {
         val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         titleRow.addView(text("TV Speed", 32f, Colors.TEXT, Typeface.create("sans-serif-medium", Typeface.NORMAL)),
             LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        tagLink = link("") { if (test == null) pickTag() }
+        tagLink = link("") { if (test == null) pickTag() }.apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            maxWidth = dp(260)   // a long tag shortens, so the title row stays one line
+        }
         titleRow.addView(tagLink, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(10) })
         titleRow.addView(link("All runs") { if (test == null) showAllRuns() })
         titleRow.addView(link("Updates") { if (test == null) updater.showSettings() },
