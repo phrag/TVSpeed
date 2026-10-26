@@ -1,7 +1,9 @@
 package com.phrag.tvspeed
 
+import android.net.TrafficStats
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import java.io.IOException
@@ -221,14 +223,28 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
     private class Transfer(val mbps: Double, val loadedMs: Double, val bytes: Long = 0L)
 
     /** Shared state for one phase's worker threads. */
-    private inner class Streams {
-        val bytes = AtomicLong()
+    private inner class Streams(phase: Phase) {
+        val bytes = AtomicLong()   // read from, or written into, the sockets
         val stop = AtomicBoolean(false)
         val errors = AtomicLong()
         val firstError = AtomicReference<String>()   // why requests fail, for the error message
         val refused = AtomicReference<HttpError>()     // set: give up now instead of retrying
         val open: MutableSet<HttpURLConnection> = ConcurrentHashMap.newKeySet()
         val running get() = !stop.get() && !cancelled.get()
+
+        // A write returns once the bytes are in the socket's send buffer (megabytes,
+        // on Android), long before they leave; on a slow or VPN uplink counting
+        // written bytes inflates upload. So for upload also read what this app has
+        // actually transmitted, where the platform reports it.
+        private val tx0 = if (phase == Phase.UPLOAD) uidTx() else -1L
+
+        /** Bytes that count toward the speed so far: for upload, only those sent. */
+        fun counted(): Long {
+            val written = bytes.get()
+            if (tx0 < 0) return written
+            val tx = uidTx()
+            return if (tx < 0) written else sentBytes(written, tx - tx0)
+        }
 
         fun fail(e: IOException) {
             errors.incrementAndGet()
@@ -247,7 +263,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
     private fun transfer(phase: Phase, addr: InetAddress, streams: Int, loop: (Streams) -> Unit): Transfer {
         if (cancelled.get()) return Transfer(0.0, 0.0)
         post { onPhase(phase) }
-        val s = Streams()
+        val s = Streams(phase)
         val workers = List(streams) { i -> Thread({ loop(s) }, "tvspeed-${phase.name.lowercase()}-$i") }
         val loaded = ArrayList<Double>()
         val prober = Thread({
@@ -270,7 +286,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
             while (!cancelled.get()) {
                 Thread.sleep(SAMPLE_MS)
                 val now = SystemClock.elapsedRealtime()
-                val b = s.bytes.get()
+                val b = s.counted()
                 window.addLast(now to b)
                 while (window.size > 2 && now - window.first().first > 1_000) window.removeFirst()
                 val (wt, wb) = window.first()
@@ -289,7 +305,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
             s.open.forEach { runCatching { it.disconnect() } }   // unblock reads/writes
         }
         val end = SystemClock.elapsedRealtime()
-        val total = s.bytes.get()
+        val total = s.counted()
         workers.forEach { it.join(2_000) }
         prober.join(2_000)
         if (cancelled.get()) throw InterruptedException()
@@ -465,6 +481,19 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
             }
             return null
         }
+
+        /** This app's transmitted bytes (headers included); negative if unsupported. */
+        private fun uidTx(): Long = TrafficStats.getUidTxBytes(Process.myUid())
+
+        /**
+         * Upload bytes that have left the device: [written] into the sockets, capped
+         * by [txDelta], what the app transmitted meanwhile (negative: unknown). Each
+         * overcounts in its own way, written bytes by what still sits in send
+         * buffers and transmitted bytes by a few percent of TCP/TLS overhead, so the
+         * smaller is the closer.
+         */
+        fun sentBytes(written: Long, txDelta: Long): Long =
+            if (txDelta < 0) written else minOf(written, txDelta)
 
         private fun mbps(bytes: Long, ms: Long) = if (ms <= 0) 0.0 else bytes * 8.0 / ms / 1_000.0
 
