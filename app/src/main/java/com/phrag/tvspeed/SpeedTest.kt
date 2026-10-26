@@ -506,6 +506,8 @@ class SpeedTest(
         val SERVERS = listOf(
             // Freifunk München: community network, non-profit; anycast in Germany.
             Backend.openSpeedTest("Freifunk", "Munich", "Germany", "https://speedtest.ffmuc.net"),
+            Backend.libreSpeed("WOBCOM BER1", "Berlin", "Germany", "https://a209.speedtest.wobcom.de/librespeed/backend"), // German ISP (AS9136), NTT Berlin 1
+            Backend.libreSpeed("WOBCOM Gradestr.", "Berlin", "Germany", "https://a110.speedtest.wobcom.de/librespeed/backend"), // German ISP (AS9136), Lumen Berlin
             Backend.libreSpeed("CESNET", "Prague", "Czechia", "https://speedtest.cesnet.cz/backend"),       // Czech research network
             Backend.libreSpeed("CZ.NIC", "Prague", "Czechia", "https://librespeed.turris.cz/backend"),      // .cz registry, non-profit
             Backend.libreSpeed("GARR", "Rome", "Italy", "https://st-be-rm2.infra.garr.it"),                 // Italian research network
