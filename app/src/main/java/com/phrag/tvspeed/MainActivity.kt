@@ -39,7 +39,25 @@ class MainActivity : Activity(), SpeedTest.Listener {
         }
     }
 
+    /** A one-line row where [flex] takes whatever width the other children leave, so a long label shortens instead of pushing the rest off screen. */
+    private class FlexRow(context: Context, private val flex: TextView) : LinearLayout(context) {
+        override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+            var others = paddingLeft + paddingRight
+            for (i in 0 until childCount) {
+                val c = getChildAt(i)
+                if (c === flex || c.visibility == View.GONE) continue
+                c.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED), MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
+                val m = c.layoutParams as MarginLayoutParams
+                others += c.measuredWidth + m.leftMargin + m.rightMargin
+            }
+            val m = flex.layoutParams as MarginLayoutParams
+            flex.maxWidth = (MeasureSpec.getSize(widthSpec) - others - m.leftMargin - m.rightMargin).coerceAtLeast(0)
+            super.onMeasure(widthSpec, heightSpec)
+        }
+    }
+
     private lateinit var history: History
+    private val settings by lazy { Settings(this) }
     private val picks by lazy { getSharedPreferences("server", Context.MODE_PRIVATE) }
     /** The server picked in the UI, by name; null = automatic (nearest). */
     private var chosen: String?
@@ -116,19 +134,18 @@ class MainActivity : Activity(), SpeedTest.Listener {
 
         // Right: title, network, tiles, verdict, history.
         val right = column().apply { setPadding(dp(40), 0, 0, 0) }
-        val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        // The title is measured first and never shrinks; a long tag gives way to it, so the row stays one line.
-        titleRow.addView(text("TV Speed", 28f, Colors.TEXT, Typeface.create("sans-serif-medium", Typeface.NORMAL)).apply { maxLines = 1 },
-            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
-        titleRow.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         tagLink = link("") { if (test == null) pickTag() }.apply {
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
-            maxWidth = dp(260)   // a long tag shortens, so the title row stays one line
         }
+        // The title and buttons keep their width; the tag takes what is left and shortens, so the row always fits on one line.
+        val titleRow = FlexRow(this, tagLink).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        titleRow.addView(text("TV Speed", 28f, Colors.TEXT, Typeface.create("sans-serif-medium", Typeface.NORMAL)).apply { maxLines = 1 },
+            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        titleRow.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         titleRow.addView(tagLink, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(10) })
         titleRow.addView(link("All runs") { if (test == null) showAllRuns() })
-        titleRow.addView(link("Updates") { if (test == null) updater.showSettings() },
+        titleRow.addView(link("Settings") { if (test == null) showSettings() },
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(10) })
         right.addView(titleRow)
         networkLine = text("", 16f, Colors.TEXT2)
@@ -222,7 +239,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         // adb: am start -n com.phrag.tvspeed/.MainActivity --es server GARR (see README)
         val only = intent.getStringExtra("server") ?: chosen
         autoRun = only == null
-        test = SpeedTest(this, only, lastAuto).also { it.start() }
+        test = SpeedTest(this, only, settings.config, lastAuto).also { it.start() }
     }
 
     private fun stopTest(message: String) {
@@ -420,8 +437,63 @@ class MainActivity : Activity(), SpeedTest.Listener {
         setOnClickListener { onClick() }
     }
 
-    /** D-pad list: Automatic, then each server as "City, Country · operator". */
-    private fun pickServer() {
+    /**
+     * D-pad list of every option with its current value. OK on a row opens its choices;
+     * picking one (or Back) returns here, Back again closes.
+     */
+    private fun showSettings() {
+        val server = SpeedTest.SERVERS.find { it.name == chosen }?.let { "${it.city} · ${it.name}" } ?: "Auto (nearest)"
+        val rows = listOf<Pair<String, () -> Unit>>(
+            "Test server: $server" to { pickServer(then = ::showSettings) },
+            "Test length: ${settings.length.description}" to ::pickLength,
+            "Download streams: ${settings.downStreams}" to {
+                pickNumber("Download streams", Settings.DOWN_CHOICES, settings.downStreams, SpeedTest.DOWN_STREAMS) { settings.downStreams = it }
+            },
+            "Upload streams: ${settings.upStreams}" to {
+                pickNumber("Upload streams", Settings.UP_CHOICES, settings.upStreams, SpeedTest.UP_STREAMS) { settings.upStreams = it }
+            },
+            "Reset to defaults" to {
+                settings.reset()
+                chosen = null
+                showChoice()
+                showSettings()
+            },
+            "Updates…" to { updater.showSettings() },
+        )
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Settings")
+            .setItems(rows.map { it.first }.toTypedArray()) { _, i -> rows[i].second() }
+            .setPositiveButton("Close", null)
+            .show()
+    }
+
+    private fun pickLength() {
+        val all = Settings.Length.values()
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Test length")
+            .setSingleChoiceItems(all.map { it.description }.toTypedArray(), all.indexOf(settings.length)) { d, i ->
+                settings.length = all[i]
+                d.dismiss()
+            }
+            .setOnDismissListener { showSettings() }
+            .show()
+    }
+
+    /** Parallel streams: more fill a fast line or a VPN tunnel; fewer are gentler on a slow one. */
+    private fun pickNumber(title: String, choices: List<Int>, current: Int, default: Int, save: (Int) -> Unit) {
+        val labels = choices.map { if (it == default) "$it (default)" else "$it" }.toTypedArray()
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle(title)
+            .setSingleChoiceItems(labels, choices.indexOf(current)) { d, i ->
+                save(choices[i])
+                d.dismiss()
+            }
+            .setOnDismissListener { showSettings() }
+            .show()
+    }
+
+    /** D-pad list: Automatic, then each server as "City, Country · operator". [then] runs once it closes. */
+    private fun pickServer(then: (() -> Unit)? = null) {
         val names = listOf<String?>(null) + SpeedTest.SERVERS.map { it.name }
         val labels = arrayOf("Automatic (nearest)") + SpeedTest.SERVERS.map { "${it.place} · ${it.name}" }
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
@@ -431,6 +503,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
                 showChoice()
                 d.dismiss()
             }
+            .setOnDismissListener { then?.invoke() }
             .show()
     }
 

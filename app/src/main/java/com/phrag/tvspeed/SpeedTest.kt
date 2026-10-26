@@ -42,12 +42,14 @@ import org.json.JSONObject
  *
  * [Listener] callbacks arrive on the main thread and stop after [cancel].
  * [only] names one server from [SERVERS] to test against, with no fallback.
+ * [config] sets the stream counts and phase lengths (the Settings screen).
  * [lastAuto] is the server the previous automatic run used, by name; it is kept
  * while no other server is measurably nearer, so Auto doesn't hop between equals.
  */
 class SpeedTest(
     private val listener: Listener,
     private val only: String? = null,
+    private val config: Config = Config(),
     private val lastAuto: String? = null,
     private val clock: Clock = Clock.System,
 ) {
@@ -62,6 +64,14 @@ class SpeedTest(
             override fun sleep(ms: Long) = SystemClock.sleep(ms)
         }
     }
+
+    /** How hard and how long a run pushes: parallel streams per direction, and transfer phase lengths. */
+    data class Config(
+        val downStreams: Int = DOWN_STREAMS,
+        val upStreams: Int = UP_STREAMS,
+        val transferMs: Long = TRANSFER_MS,
+        val streamMs: Long = STREAM_MS,
+    )
 
     enum class Phase(val label: String) {
         CONNECTING("Connecting"), LATENCY("Latency"), DOWNLOAD("Download"), STREAM("Single stream"), UPLOAD("Upload")
@@ -262,9 +272,9 @@ class SpeedTest(
         }
         if (idle.isEmpty()) throw IOException("no reply")
 
-        val down = transfer(Phase.DOWNLOAD, addr, DOWN_STREAMS) { downloadLoop(backend, it) }
-        val stream = transfer(Phase.STREAM, addr, 1, STREAM_MS, probe = false) { downloadLoop(backend, it) }
-        val up = transfer(Phase.UPLOAD, addr, UP_STREAMS) { uploadLoop(backend, it) }
+        val down = transfer(Phase.DOWNLOAD, addr, config.downStreams) { downloadLoop(backend, it) }
+        val stream = transfer(Phase.STREAM, addr, 1, config.streamMs, probe = false) { downloadLoop(backend, it) }
+        val up = transfer(Phase.UPLOAD, addr, config.upStreams) { uploadLoop(backend, it) }
         if (cancelled.get()) throw InterruptedException()
         val result = Result(
             pingMs = median(idle),
@@ -325,7 +335,7 @@ class SpeedTest(
      * plus a latency prober if [probe]. Returns the average after [WARMUP_MS].
      */
     internal fun transfer(
-        phase: Phase, addr: InetAddress, streams: Int, durationMs: Long = TRANSFER_MS, probe: Boolean = true,
+        phase: Phase, addr: InetAddress, streams: Int, durationMs: Long = config.transferMs, probe: Boolean = true,
         loop: (Streams) -> Unit,
     ): Transfer {
         if (cancelled.get()) return Transfer(0.0, 0.0)
@@ -508,8 +518,8 @@ class SpeedTest(
         private const val PING_SAMPLES = 20
         private const val PING_GAP_MS = 100L
         private const val LOADED_PING_GAP_MS = 300L
-        private const val DOWN_STREAMS = 6
-        private const val UP_STREAMS = 4
+        const val DOWN_STREAMS = 6
+        const val UP_STREAMS = 4
         private const val DOWN_MIB = 25   // garbage.php's ckSize: MiB per request
         /**
          * How many of [connectMs] (ascending) are too close to the fastest to tell apart. Through
@@ -558,8 +568,8 @@ class SpeedTest(
         private const val TIE_MS = 3.0   // connect times within this of the nearest's...
         private const val TIE_RATIO = 0.15   // ...or this share of it count as equally near
         private const val UP_BYTES = 8_000_000L
-        private const val TRANSFER_MS = 12_000L
-        private const val STREAM_MS = 8_000L   // single-stream phase; warm-up is cut from it too
+        const val TRANSFER_MS = 12_000L
+        const val STREAM_MS = 8_000L   // single-stream phase; warm-up is cut from it too
         private const val WARMUP_MS = 2_000L
         private const val SAMPLE_MS = 200L
         private const val BUF = 64 * 1024
