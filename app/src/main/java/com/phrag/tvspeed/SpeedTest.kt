@@ -200,9 +200,46 @@ class SpeedTest(
             }, "tvspeed-rank").apply { start() }
         }.forEach { it.join(10_000) }
         if (cancelled.get()) throw InterruptedException()
-        return candidates.mapNotNull { b -> found[b]?.let { Triple(b, it.first, it.second) } }
+        val byConnect = candidates.mapNotNull { b -> found[b]?.let { Triple(b, it.first, it.second) } }
             .sortedBy { it.third }
             .map { it.first to it.second }
+        if (cancelled.get()) throw InterruptedException()
+        return refine(byConnect)
+    }
+
+    /**
+     * A TCP handshake only measures the nearest thing that answers on port 443. A host behind
+     * an anycast or DDoS-protection edge can answer from next door while the server that does
+     * the work is an ocean away, so it would win the ranking and then test slowly. Re-rank the
+     * closest few by a full HTTPS request, which has to reach the real server.
+     */
+    private fun refine(ranked: List<Pair<Backend, InetAddress>>): List<Pair<Backend, InetAddress>> {
+        val head = ranked.take(REFINE_TOP)
+        if (head.size < 2) return ranked
+        val times = ConcurrentHashMap<Backend, Double>()
+        head.map { (b, _) ->
+            Thread({
+                val ms = (1..REFINE_SAMPLES).mapNotNull { requestTime(b) }
+                if (ms.isNotEmpty()) times[b] = ms.min()
+            }, "tvspeed-refine").apply { start() }
+        }.forEach { it.join(10_000) }
+        if (cancelled.get()) throw InterruptedException()
+        // Servers that didn't answer keep their place after those that did.
+        return head.sortedBy { times[it.first] ?: Double.MAX_VALUE } + ranked.drop(REFINE_TOP)
+    }
+
+    /** One HTTPS request (new connection) to the server's light endpoint, to the first response byte, in ms. */
+    private fun requestTime(b: Backend): Double? = try {
+        val c = open(b.ip ?: b.down)
+        try {
+            val t = System.nanoTime()
+            c.responseCode   // headers only: the body is never read
+            (System.nanoTime() - t) / 1e6
+        } finally {
+            c.disconnect()
+        }
+    } catch (e: IOException) {
+        null
     }
 
     /** The whole run against one server; throws if it refuses or fails so [run] can fall back. */
@@ -472,6 +509,8 @@ class SpeedTest(
         private const val UP_STREAMS = 4
         private const val DOWN_MIB = 25   // garbage.php's ckSize: MiB per request
         private const val RANK_SAMPLES = 5   // connect times per address when picking the nearest
+        private const val REFINE_TOP = 3   // nearest by connect time that get an HTTPS timing as well
+        private const val REFINE_SAMPLES = 3
         private const val UP_BYTES = 8_000_000L
         private const val TRANSFER_MS = 12_000L
         private const val STREAM_MS = 8_000L   // single-stream phase; warm-up is cut from it too
