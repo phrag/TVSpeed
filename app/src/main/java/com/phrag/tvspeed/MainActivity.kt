@@ -357,6 +357,8 @@ class MainActivity : Activity(), SpeedTest.Listener {
             }
             .setNegativeButton("Cancel", null)
             .show()
+            // The D-pad lands on Clear by default, so one stray OK would wipe every run.
+            .getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus()
     }
 
     /** A small focusable text button for the title row. */
