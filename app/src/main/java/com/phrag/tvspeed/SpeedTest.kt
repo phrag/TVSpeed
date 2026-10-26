@@ -1,7 +1,9 @@
 package com.phrag.tvspeed
 
+import android.net.TrafficStats
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import java.io.IOException
@@ -25,14 +27,18 @@ import org.json.JSONObject
  * connection (VPN exit included) is used; if it refuses (rate limit) or
  * fails, the run starts over on the next.
  *
- * Phases: idle latency → download → upload. Latency is TCP connect time to
- * the edge (exactly one round trip, no server processing), sampled again
- * while each transfer runs to show how much the connection's latency grows
- * under load — the usual cause of buffering on a "fast" line or a VPN.
+ * Phases: idle latency → download → single stream → upload. Latency is TCP
+ * connect time to the edge (exactly one round trip, no server processing),
+ * sampled again while the download and upload run to show how much the
+ * connection's latency grows under load — the usual cause of buffering on a "fast" line or a VPN.
  *
  * Throughput uses several parallel streams (one TCP stream under-reports,
  * badly so through a VPN), drops the first seconds of TCP slow start and
  * reports the average over the rest. Packet loss can't be seen over HTTP.
+ *
+ * The parallel figure is the line's capacity, but streaming apps fetch video
+ * over one or two connections, so a short single-stream download follows it:
+ * that is the figure that says whether video will buffer.
  *
  * [Listener] callbacks arrive on the main thread and stop after [cancel].
  * [only] names one server from [SERVERS] to test against, with no fallback.
@@ -40,7 +46,7 @@ import org.json.JSONObject
 class SpeedTest(private val listener: Listener, private val only: String? = null) {
 
     enum class Phase(val label: String) {
-        CONNECTING("Connecting"), LATENCY("Latency"), DOWNLOAD("Download"), UPLOAD("Upload")
+        CONNECTING("Connecting"), LATENCY("Latency"), DOWNLOAD("Download"), STREAM("Single stream"), UPLOAD("Upload")
     }
 
     data class Result(
@@ -48,8 +54,13 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
         val jitterMs: Double,
         val downLoadedMs: Double,
         val upLoadedMs: Double,
+        /** Parallel streams: what the line can carry. */
         val downMbps: Double,
+        /** One stream, as a video app fetches: what playback gets. */
+        val streamMbps: Double,
         val upMbps: Double,
+        val downBytes: Long,
+        val upBytes: Long,
         val server: Server,
     )
 
@@ -197,6 +208,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
         if (idle.isEmpty()) throw IOException("no reply")
 
         val down = transfer(Phase.DOWNLOAD, addr, DOWN_STREAMS) { downloadLoop(backend, it) }
+        val stream = transfer(Phase.STREAM, addr, 1, STREAM_MS, probe = false) { downloadLoop(backend, it) }
         val up = transfer(Phase.UPLOAD, addr, UP_STREAMS) { uploadLoop(backend, it) }
         if (cancelled.get()) throw InterruptedException()
         val result = Result(
@@ -205,7 +217,10 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
             downLoadedMs = down.loadedMs,
             upLoadedMs = up.loadedMs,
             downMbps = down.mbps,
+            streamMbps = stream.mbps,
             upMbps = up.mbps,
+            downBytes = down.bytes + stream.bytes,   // both download phases use data
+            upBytes = up.bytes,
             server = server,
         )
         Log.i(TAG, "result: $result")
@@ -214,17 +229,31 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
 
     // ---- transfers --------------------------------------------------------
 
-    private class Transfer(val mbps: Double, val loadedMs: Double)
+    private class Transfer(val mbps: Double, val loadedMs: Double, val bytes: Long = 0L)
 
     /** Shared state for one phase's worker threads. */
-    private inner class Streams {
-        val bytes = AtomicLong()
+    private inner class Streams(phase: Phase) {
+        val bytes = AtomicLong()   // read from, or written into, the sockets
         val stop = AtomicBoolean(false)
         val errors = AtomicLong()
         val firstError = AtomicReference<String>()   // why requests fail, for the error message
         val refused = AtomicReference<HttpError>()     // set: give up now instead of retrying
         val open: MutableSet<HttpURLConnection> = ConcurrentHashMap.newKeySet()
         val running get() = !stop.get() && !cancelled.get()
+
+        // A write returns once the bytes are in the socket's send buffer (megabytes,
+        // on Android), long before they leave; on a slow or VPN uplink counting
+        // written bytes inflates upload. So for upload also read what this app has
+        // actually transmitted, where the platform reports it.
+        private val tx0 = if (phase == Phase.UPLOAD) uidTx() else -1L
+
+        /** Bytes that count toward the speed so far: for upload, only those sent. */
+        fun counted(): Long {
+            val written = bytes.get()
+            if (tx0 < 0) return written
+            val tx = uidTx()
+            return if (tx < 0) written else sentBytes(written, tx - tx0)
+        }
 
         fun fail(e: IOException) {
             errors.incrementAndGet()
@@ -237,13 +266,16 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
     }
 
     /**
-     * Run [streams] copies of [loop] for [TRANSFER_MS], reporting live speed,
-     * plus a latency prober. Returns the average after [WARMUP_MS].
+     * Run [streams] copies of [loop] for [durationMs], reporting live speed,
+     * plus a latency prober if [probe]. Returns the average after [WARMUP_MS].
      */
-    private fun transfer(phase: Phase, addr: InetAddress, streams: Int, loop: (Streams) -> Unit): Transfer {
+    private fun transfer(
+        phase: Phase, addr: InetAddress, streams: Int, durationMs: Long = TRANSFER_MS, probe: Boolean = true,
+        loop: (Streams) -> Unit,
+    ): Transfer {
         if (cancelled.get()) return Transfer(0.0, 0.0)
         post { onPhase(phase) }
-        val s = Streams()
+        val s = Streams(phase)
         val workers = List(streams) { i -> Thread({ loop(s) }, "tvspeed-${phase.name.lowercase()}-$i") }
         val loaded = ArrayList<Double>()
         val prober = Thread({
@@ -256,7 +288,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
             }
         }, "tvspeed-probe")
         workers.forEach { it.start() }
-        prober.start()
+        if (probe) prober.start()
 
         val t0 = SystemClock.elapsedRealtime()
         var warmT = 0L
@@ -266,7 +298,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
             while (!cancelled.get()) {
                 Thread.sleep(SAMPLE_MS)
                 val now = SystemClock.elapsedRealtime()
-                val b = s.bytes.get()
+                val b = s.counted()
                 window.addLast(now to b)
                 while (window.size > 2 && now - window.first().first > 1_000) window.removeFirst()
                 val (wt, wb) = window.first()
@@ -278,23 +310,23 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
                     warmT = now
                     warmBytes = b
                 }
-                if (now - t0 >= TRANSFER_MS || s.refused.get() != null) break
+                if (now - t0 >= durationMs || s.refused.get() != null) break
             }
         } finally {
             s.stop.set(true)
             s.open.forEach { runCatching { it.disconnect() } }   // unblock reads/writes
         }
         val end = SystemClock.elapsedRealtime()
-        val total = s.bytes.get()
+        val total = s.counted()
         workers.forEach { it.join(2_000) }
-        prober.join(2_000)
+        if (probe) prober.join(2_000)
         if (cancelled.get()) throw InterruptedException()
         s.refused.get()?.let { throw IOException(refusedMessage(it)) }
         if (total == 0L) throw IOException("${phase.label} failed: no data transferred (${s.errors.get()} errors: ${s.firstError.get()})")
         val result = if (warmT > 0 && end > warmT) mbps(total - warmBytes, end - warmT) else mbps(total, end - t0)
         val loadedMedian = synchronized(loaded) { if (loaded.isEmpty()) 0.0 else median(loaded) }
         Log.i(TAG, "${phase.name}: ${"%.1f".format(result)} Mbit/s, ${total / 1_000_000} MB, loaded ${"%.0f".format(loadedMedian)} ms, ${s.errors.get()} errors")
-        return Transfer(result, loadedMedian)
+        return Transfer(result, loadedMedian, total)
     }
 
     private fun downloadLoop(b: Backend, s: Streams) {
@@ -427,6 +459,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
         private const val RANK_SAMPLES = 5   // connect times per address when picking the nearest
         private const val UP_BYTES = 8_000_000L
         private const val TRANSFER_MS = 12_000L
+        private const val STREAM_MS = 8_000L   // single-stream phase; warm-up is cut from it too
         private const val WARMUP_MS = 2_000L
         private const val SAMPLE_MS = 200L
         private const val BUF = 64 * 1024
@@ -464,6 +497,19 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
             }
             return null
         }
+
+        /** This app's transmitted bytes (headers included); negative if unsupported. */
+        private fun uidTx(): Long = TrafficStats.getUidTxBytes(Process.myUid())
+
+        /**
+         * Upload bytes that have left the device: [written] into the sockets, capped
+         * by [txDelta], what the app transmitted meanwhile (negative: unknown). Each
+         * overcounts in its own way, written bytes by what still sits in send
+         * buffers and transmitted bytes by a few percent of TCP/TLS overhead, so the
+         * smaller is the closer.
+         */
+        fun sentBytes(written: Long, txDelta: Long): Long =
+            if (txDelta < 0) written else minOf(written, txDelta)
 
         private fun mbps(bytes: Long, ms: Long) = if (ms <= 0) 0.0 else bytes * 8.0 / ms / 1_000.0
 
