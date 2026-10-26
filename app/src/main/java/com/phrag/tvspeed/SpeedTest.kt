@@ -224,8 +224,7 @@ class SpeedTest(
             }, "tvspeed-refine").apply { start() }
         }.forEach { it.join(10_000) }
         if (cancelled.get()) throw InterruptedException()
-        // Servers that didn't answer keep their place after those that did.
-        return head.sortedBy { times[it.first] ?: Double.MAX_VALUE } + ranked.drop(REFINE_TOP)
+        return reorder(head, times.mapKeys { it.key.name }) + ranked.drop(REFINE_TOP)
     }
 
     /** One HTTPS request (new connection) to the server's light endpoint, to the first response byte, in ms. */
@@ -508,9 +507,27 @@ class SpeedTest(
         private const val DOWN_STREAMS = 6
         private const val UP_STREAMS = 4
         private const val DOWN_MIB = 25   // garbage.php's ckSize: MiB per request
+        /**
+         * Orders [head] (nearest by connect time first) by HTTPS [times] (by backend name), but
+         * the connect-time leader stays first unless another server answers clearly faster.
+         * An HTTPS request also measures how quickly each server's script responds, so near-equal
+         * servers swap places from run to run; a fake-near anycast edge is hundreds of ms slower.
+         * Servers that didn't answer keep their place after those that did.
+         */
+        internal fun reorder(head: List<Pair<Backend, InetAddress>>, times: Map<String, Double>): List<Pair<Backend, InetAddress>> {
+            val sorted = head.sortedBy { times[it.first.name] ?: Double.MAX_VALUE }
+            val leader = head.firstOrNull() ?: return head
+            val leaderMs = times[leader.first.name] ?: return sorted
+            val bestMs = times[sorted.first().first.name] ?: return sorted
+            val clearlyFaster = leaderMs - bestMs > REFINE_MARGIN_MS && bestMs < leaderMs * REFINE_MARGIN_RATIO
+            return if (clearlyFaster) sorted else listOf(leader) + sorted.filter { it !== leader }
+        }
+
         private const val RANK_SAMPLES = 5   // connect times per address when picking the nearest
         private const val REFINE_TOP = 3   // nearest by connect time that get an HTTPS timing as well
         private const val REFINE_SAMPLES = 3
+        private const val REFINE_MARGIN_MS = 30.0   // an HTTPS time must beat the nearest's by this much...
+        private const val REFINE_MARGIN_RATIO = 0.6   // ...and by this share, to take its place
         private const val UP_BYTES = 8_000_000L
         private const val TRANSFER_MS = 12_000L
         private const val STREAM_MS = 8_000L   // single-stream phase; warm-up is cut from it too
