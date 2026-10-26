@@ -412,8 +412,9 @@ class MainActivity : Activity(), SpeedTest.Listener {
     }
 
     private fun typeTag() {
+        val current = tag   // inside apply, "tag" would be View.getTag()
         val input = android.widget.EditText(this).apply {
-            setText(tag)
+            setText(current)
             setSingleLine()
             filters = arrayOf(android.text.InputFilter.LengthFilter(MAX_TAG))
         }
