@@ -366,7 +366,7 @@ class SpeedTest(
 
     // ---- helpers -------------------------------------------------------------
 
-    private class HttpError(val code: Int, val retryAfterS: Long?) : IOException("HTTP $code") {
+    internal class HttpError(val code: Int, val retryAfterS: Long?) : IOException("HTTP $code") {
         /** Retrying won't help: the server is refusing this client (VPN exits often hit this). */
         val refused get() = code == 429 || code == 403
     }
