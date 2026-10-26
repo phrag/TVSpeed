@@ -449,7 +449,8 @@ class SpeedTest(
 
         /**
          * Public LibreSpeed / OpenSpeedTest servers run by European non-profits,
-         * community networks and research networks, not ad or CDN companies.
+         * community networks and research networks, plus a few North American hosts
+         * (the public list has no non-profit servers there). No ad or CDN companies.
          * Each handles 25+ MiB downloads and 8 MB uploads over HTTPS.
          */
         val SERVERS = listOf(
@@ -460,6 +461,8 @@ class SpeedTest(
             Backend.libreSpeed("GARR", "Rome", "Italy", "https://st-be-rm2.infra.garr.it"),                 // Italian research network
             Backend.libreSpeed("SOX", "Belgrade", "Serbia", "https://speedtest1.sox.rs/librespeed/backend"), // Serbian internet exchange
             Backend.libreSpeed("RedIRIS", "Madrid", "Spain", "https://speedtest.rediris.es/backend"),       // Spanish research network
+            Backend.libreSpeed("Sharktech CHI", "Chicago", "USA", "https://chispeed.sharktech.net/backend"),     // US hosting provider, not a non-profit
+            Backend.libreSpeed("Sharktech LAX", "Los Angeles", "USA", "https://laxspeed.sharktech.net/backend"), // US hosting provider, not a non-profit
         )
 
         private const val PING_SAMPLES = 20

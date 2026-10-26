@@ -36,8 +36,9 @@ Packet loss can't be measured over HTTP, so the app doesn't report it.
 
 ## Servers
 
-Public speed-test servers run by European non-profits, community networks and research
-networks: no key, no ads or tracking, and no CDN company in the path.
+Public speed-test servers, mostly run by European non-profits, community networks and
+research networks, plus two North American hosting providers (the public LibreSpeed list
+has no non-profit servers outside Europe): no key, no ads or tracking, and no CDN company in the path.
 
 **Automatic** (the default) picks the server nearest to the connection being tested, by
 the median of five TCP connect times to each of its addresses (IPv6 and IPv4). Behind a
@@ -53,6 +54,8 @@ server every time, select the **Server** tile and pick it; the choice is remembe
 | Rome, Italy | GARR (Italian research network) | LibreSpeed | `https://st-be-rm2.infra.garr.it` |
 | Belgrade, Serbia | SOX (Serbian internet exchange) | LibreSpeed | `https://speedtest1.sox.rs/librespeed/backend` |
 | Madrid, Spain | RedIRIS (Spanish research network) | LibreSpeed | `https://speedtest.rediris.es/backend` |
+| Chicago, USA | Sharktech (US hosting provider, not a non-profit) | LibreSpeed | `https://chispeed.sharktech.net/backend` |
+| Los Angeles, USA | Sharktech (US hosting provider, not a non-profit) | LibreSpeed | `https://laxspeed.sharktech.net/backend` |
 
 | What | LibreSpeed | OpenSpeedTest |
 |---|---|---|
