@@ -46,6 +46,13 @@ VPN that means nearest to the VPN exit. If that server refuses (HTTP 429/403, as
 limits on shared VPN exits do) or fails, the run starts over on the next one. To use one
 server every time, select the **Server** tile and pick it; the choice is remembered.
 
+Automatic looks for a server in your city or country first, and only then the nearest. The
+place is never worked out from your IP: by default it is the country of the TV's time zone
+(read on the TV, no network lookup), and a server there is only preferred when it is about as
+near as the nearest one (within 40 ms), so a VPN exit abroad still gets a server near the exit.
+To choose the place, select the **Server** tile, then **Automatic looks first in…**, and pick
+a country or city; a place you pick is always preferred while one of its servers answers.
+
 | Server | Operator | Kind | Base URL |
 |---|---|---|---|
 | Munich, Germany | Freifunk München (community network, anycast) | OpenSpeedTest | `https://speedtest.ffmuc.net` |
