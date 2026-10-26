@@ -43,7 +43,22 @@ import org.json.JSONObject
  * [Listener] callbacks arrive on the main thread and stop after [cancel].
  * [only] names one server from [SERVERS] to test against, with no fallback.
  */
-class SpeedTest(private val listener: Listener, private val only: String? = null) {
+class SpeedTest(
+    private val listener: Listener,
+    private val only: String? = null,
+    private val clock: Clock = Clock.System,
+) {
+
+    /** Time source, so the throughput maths can run on a fake clock in JVM tests. */
+    interface Clock {
+        fun elapsedMs(): Long
+        fun sleep(ms: Long)
+
+        object System : Clock {
+            override fun elapsedMs() = SystemClock.elapsedRealtime()
+            override fun sleep(ms: Long) = SystemClock.sleep(ms)
+        }
+    }
 
     enum class Phase(val label: String) {
         CONNECTING("Connecting"), LATENCY("Latency"), DOWNLOAD("Download"), STREAM("Single stream"), UPLOAD("Upload")
@@ -143,7 +158,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
                         val refused = e is HttpError && e.refused || e.message.orEmpty().startsWith("refused")
                         if (attempt == 1 && !refused) {
                             Log.w(TAG, "${backend.name} failed, retrying once", e)
-                            SystemClock.sleep(RETRY_DELAY_MS)
+                            clock.sleep(RETRY_DELAY_MS)
                             continue
                         }
                         Log.w(TAG, "${backend.name} failed, trying the next server", e)
@@ -203,7 +218,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
                 idle.add(ms)
                 post { onLatency(ms, loaded = false) }
             }
-            SystemClock.sleep(PING_GAP_MS)
+            clock.sleep(PING_GAP_MS)
         }
         if (idle.isEmpty()) throw IOException("no reply")
 
@@ -229,10 +244,10 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
 
     // ---- transfers --------------------------------------------------------
 
-    private class Transfer(val mbps: Double, val loadedMs: Double, val bytes: Long = 0L)
+    internal class Transfer(val mbps: Double, val loadedMs: Double, val bytes: Long = 0L)
 
     /** Shared state for one phase's worker threads. */
-    private inner class Streams(phase: Phase) {
+    internal inner class Streams(phase: Phase) {
         val bytes = AtomicLong()   // read from, or written into, the sockets
         val stop = AtomicBoolean(false)
         val errors = AtomicLong()
@@ -269,7 +284,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
      * Run [streams] copies of [loop] for [durationMs], reporting live speed,
      * plus a latency prober if [probe]. Returns the average after [WARMUP_MS].
      */
-    private fun transfer(
+    internal fun transfer(
         phase: Phase, addr: InetAddress, streams: Int, durationMs: Long = TRANSFER_MS, probe: Boolean = true,
         loop: (Streams) -> Unit,
     ): Transfer {
@@ -284,20 +299,20 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
                     synchronized(loaded) { loaded.add(ms) }
                     post { onLatency(ms, loaded = true) }
                 }
-                SystemClock.sleep(LOADED_PING_GAP_MS)
+                clock.sleep(LOADED_PING_GAP_MS)
             }
         }, "tvspeed-probe")
         workers.forEach { it.start() }
         if (probe) prober.start()
 
-        val t0 = SystemClock.elapsedRealtime()
+        val t0 = clock.elapsedMs()
         var warmT = 0L
         var warmBytes = 0L
         val window = ArrayDeque<Pair<Long, Long>>()   // (time, bytes) over the last second, for the live figure
         try {
             while (!cancelled.get()) {
-                Thread.sleep(SAMPLE_MS)
-                val now = SystemClock.elapsedRealtime()
+                clock.sleep(SAMPLE_MS)
+                val now = clock.elapsedMs()
                 val b = s.counted()
                 window.addLast(now to b)
                 while (window.size > 2 && now - window.first().first > 1_000) window.removeFirst()
@@ -316,7 +331,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
             s.stop.set(true)
             s.open.forEach { runCatching { it.disconnect() } }   // unblock reads/writes
         }
-        val end = SystemClock.elapsedRealtime()
+        val end = clock.elapsedMs()
         val total = s.counted()
         workers.forEach { it.join(2_000) }
         if (probe) prober.join(2_000)
@@ -344,7 +359,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
                     }
                 }
             } catch (e: IOException) {
-                if (s.running) { s.fail(e); SystemClock.sleep(250) }
+                if (s.running) { s.fail(e); clock.sleep(250) }
             } finally {
                 s.open.remove(c)
                 if (!s.running) c.disconnect()
@@ -373,7 +388,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
                 }
                 if (s.running) { httpOk(c); c.inputStream.use { it.readBytes() } }
             } catch (e: IOException) {
-                if (s.running) { s.fail(e); SystemClock.sleep(250) }
+                if (s.running) { s.fail(e); clock.sleep(250) }
             } finally {
                 s.open.remove(c)
                 if (!s.running) c.disconnect()
@@ -383,7 +398,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
 
     // ---- helpers -------------------------------------------------------------
 
-    private class HttpError(val code: Int, val retryAfterS: Long?) : IOException("HTTP $code") {
+    internal class HttpError(val code: Int, val retryAfterS: Long?) : IOException("HTTP $code") {
         /** Retrying won't help: the server is refusing this client (VPN exits often hit this). */
         val refused get() = code == 429 || code == 403
     }
