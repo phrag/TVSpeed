@@ -59,6 +59,8 @@ a country or city; a place you pick is always preferred while one of its servers
 | Server | Operator | Kind | Base URL |
 |---|---|---|---|
 | Munich, Germany | Freifunk München (community network, anycast) | OpenSpeedTest | `https://speedtest.ffmuc.net` |
+| Berlin, Germany | WOBCOM (German ISP, AS9136; NTT Berlin 1) | LibreSpeed | `https://a209.speedtest.wobcom.de/librespeed/backend` |
+| Berlin, Germany | WOBCOM (German ISP, AS9136; Lumen Gradestraße) | LibreSpeed | `https://a110.speedtest.wobcom.de/librespeed/backend` |
 | Prague, Czechia | CESNET (Czech research network) | LibreSpeed | `https://speedtest.cesnet.cz/backend` |
 | Prague, Czechia | CZ.NIC (.cz registry, non-profit) | LibreSpeed | `https://librespeed.turris.cz/backend` |
 | Rome, Italy | GARR (Italian research network) | LibreSpeed | `https://st-be-rm2.infra.garr.it` |
