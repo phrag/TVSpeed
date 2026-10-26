@@ -12,7 +12,7 @@ class SingleStreamVerdictTest {
 
     private fun result(down: Double, stream: Double) = SpeedTest.Result(
         pingMs = 20.0, jitterMs = 1.0, downLoadedMs = 30.0, upLoadedMs = 30.0,
-        downMbps = down, streamMbps = stream, upMbps = 50.0,
+        downMbps = down, streamMbps = stream, upMbps = 50.0, downBytes = 0L, upBytes = 0L,
         server = SpeedTest.Server("CESNET", "Prague", "Czechia", "192.0.2.1"),
     )
 
