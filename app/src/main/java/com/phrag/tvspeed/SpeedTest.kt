@@ -43,11 +43,14 @@ import org.json.JSONObject
  * [Listener] callbacks arrive on the main thread and stop after [cancel].
  * [only] names one server from [SERVERS] to test against, with no fallback.
  * [config] sets the stream counts and phase lengths (the Settings screen).
+ * [lastAuto] is the server the previous automatic run used, by name; it is kept
+ * while no other server is measurably nearer, so Auto doesn't hop between equals.
  */
 class SpeedTest(
     private val listener: Listener,
     private val only: String? = null,
     private val config: Config = Config(),
+    private val lastAuto: String? = null,
     private val clock: Clock = Clock.System,
 ) {
 
@@ -210,21 +213,22 @@ class SpeedTest(
             }, "tvspeed-rank").apply { start() }
         }.forEach { it.join(10_000) }
         if (cancelled.get()) throw InterruptedException()
+        // Stable sort: equal times keep the SERVERS order.
         val byConnect = candidates.mapNotNull { b -> found[b]?.let { Triple(b, it.first, it.second) } }
             .sortedBy { it.third }
-            .map { it.first to it.second }
         if (cancelled.get()) throw InterruptedException()
-        return refine(byConnect)
+        return refine(byConnect.map { it.first to it.second }, tiedCount(byConnect.map { it.third }))
     }
 
     /**
      * A TCP handshake only measures the nearest thing that answers on port 443. A host behind
      * an anycast or DDoS-protection edge can answer from next door while the server that does
      * the work is an ocean away, so it would win the ranking and then test slowly. Re-rank the
-     * closest few by a full HTTPS request, which has to reach the real server.
+     * closest few by a full HTTPS request, which has to reach the real server. Every server
+     * [tied] with the nearest by connect time is among them, so the pick can't hang on noise.
      */
-    private fun refine(ranked: List<Pair<Backend, InetAddress>>): List<Pair<Backend, InetAddress>> {
-        val head = ranked.take(REFINE_TOP)
+    private fun refine(ranked: List<Pair<Backend, InetAddress>>, tied: Int): List<Pair<Backend, InetAddress>> {
+        val head = ranked.take(maxOf(REFINE_TOP, tied))
         if (head.size < 2) return ranked
         val times = ConcurrentHashMap<Backend, Double>()
         head.map { (b, _) ->
@@ -234,7 +238,7 @@ class SpeedTest(
             }, "tvspeed-refine").apply { start() }
         }.forEach { it.join(10_000) }
         if (cancelled.get()) throw InterruptedException()
-        return reorder(head, times.mapKeys { it.key.name }) + ranked.drop(REFINE_TOP)
+        return reorder(head, times.mapKeys { it.key.name }, tied, lastAuto) + ranked.drop(head.size)
     }
 
     /** One HTTPS request (new connection) to the server's light endpoint, to the first response byte, in ms. */
@@ -518,15 +522,38 @@ class SpeedTest(
         const val UP_STREAMS = 4
         private const val DOWN_MIB = 25   // garbage.php's ckSize: MiB per request
         /**
-         * Orders [head] (nearest by connect time first) by HTTPS [times] (by backend name), but
-         * the connect-time leader stays first unless another server answers clearly faster.
-         * An HTTPS request also measures how quickly each server's script responds, so near-equal
-         * servers swap places from run to run; a fake-near anycast edge is hundreds of ms slower.
-         * Servers that didn't answer keep their place after those that did.
+         * How many of [connectMs] (ascending) are too close to the fastest to tell apart. Through
+         * a VPN every server can show the same connect time, and then their order is chance.
          */
-        internal fun reorder(head: List<Pair<Backend, InetAddress>>, times: Map<String, Double>): List<Pair<Backend, InetAddress>> {
+        internal fun tiedCount(connectMs: List<Double>): Int {
+            val best = connectMs.firstOrNull() ?: return 0
+            val limit = best + maxOf(TIE_MS, best * TIE_RATIO)
+            return connectMs.count { it <= limit }
+        }
+
+        /**
+         * Orders [head] (nearest by connect time first) by HTTPS [times] (by backend name), but
+         * a leader stays first unless another server answers clearly faster. An HTTPS request
+         * also measures how quickly each server's script responds, so near-equal servers swap
+         * places from run to run; a fake-near anycast edge is hundreds of ms slower.
+         *
+         * The leader is the nearest by connect time. When the first [tied] servers are equally
+         * near, it is [last] (the previous automatic pick) if it is one of them, otherwise the one
+         * of them that answered HTTPS fastest (equal times: the earlier in [head]). So a repeat run
+         * on the same connection picks the same server. Servers that didn't answer keep their
+         * place after those that did.
+         */
+        internal fun reorder(
+            head: List<Pair<Backend, InetAddress>>,
+            times: Map<String, Double>,
+            tied: Int = 1,
+            last: String? = null,
+        ): List<Pair<Backend, InetAddress>> {
             val sorted = head.sortedBy { times[it.first.name] ?: Double.MAX_VALUE }
-            val leader = head.firstOrNull() ?: return head
+            val band = head.take(maxOf(tied, 1))
+            val leader = band.find { it.first.name == last }
+                ?: band.filter { times[it.first.name] != null }.minByOrNull { times.getValue(it.first.name) }
+                ?: head.firstOrNull() ?: return head
             val leaderMs = times[leader.first.name] ?: return sorted
             val bestMs = times[sorted.first().first.name] ?: return sorted
             val clearlyFaster = leaderMs - bestMs > REFINE_MARGIN_MS && bestMs < leaderMs * REFINE_MARGIN_RATIO
@@ -538,6 +565,8 @@ class SpeedTest(
         private const val REFINE_SAMPLES = 3
         private const val REFINE_MARGIN_MS = 30.0   // an HTTPS time must beat the nearest's by this much...
         private const val REFINE_MARGIN_RATIO = 0.6   // ...and by this share, to take its place
+        private const val TIE_MS = 3.0   // connect times within this of the nearest's...
+        private const val TIE_RATIO = 0.15   // ...or this share of it count as equally near
         private const val UP_BYTES = 8_000_000L
         const val TRANSFER_MS = 12_000L
         const val STREAM_MS = 8_000L   // single-stream phase; warm-up is cut from it too
