@@ -28,6 +28,17 @@ class MainActivity : Activity(), SpeedTest.Listener {
 
     private class Tile(val view: View, val value: TextView, val sub: TextView)
 
+    /** A column that hides any row that doesn't fully fit, so Recent never runs off the bottom of the screen. */
+    private class FitColumn(context: Context) : LinearLayout(context) {
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            super.onLayout(changed, l, t, r, b)
+            for (i in 0 until childCount) {
+                val c = getChildAt(i)
+                c.visibility = if (c.bottom > height) View.INVISIBLE else View.VISIBLE
+            }
+        }
+    }
+
     private lateinit var history: History
     private val picks by lazy { getSharedPreferences("server", Context.MODE_PRIVATE) }
     /** The server picked in the UI, by name; null = automatic (nearest). */
@@ -68,7 +79,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(48), dp(28), dp(48), dp(24))
+            setPadding(dp(48), dp(20), dp(48), dp(16))
             clipChildren = false
         }
 
@@ -101,7 +112,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         // Right: title, network, tiles, verdict, history.
         val right = column().apply { setPadding(dp(40), 0, 0, 0) }
         val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        titleRow.addView(text("TV Speed", 32f, Colors.TEXT, Typeface.create("sans-serif-medium", Typeface.NORMAL)),
+        titleRow.addView(text("TV Speed", 28f, Colors.TEXT, Typeface.create("sans-serif-medium", Typeface.NORMAL)),
             LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         tagLink = link("") { if (test == null) pickTag() }.apply {
             maxLines = 1
@@ -113,10 +124,10 @@ class MainActivity : Activity(), SpeedTest.Listener {
         titleRow.addView(link("Updates") { if (test == null) updater.showSettings() },
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(10) })
         right.addView(titleRow)
-        networkLine = text("", 18f, Colors.TEXT2)
+        networkLine = text("", 16f, Colors.TEXT2)
         right.addView(networkLine)
-        privacyLine = text("", 18f, Colors.TEXT2).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
-        right.addView(privacyLine, lp().apply { bottomMargin = dp(12) })
+        privacyLine = text("", 16f, Colors.TEXT2).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        right.addView(privacyLine, lp().apply { bottomMargin = dp(8) })
 
         down = tile("DOWNLOAD", Colors.DOWN)
         up = tile("UPLOAD", Colors.UP)
@@ -131,17 +142,17 @@ class MainActivity : Activity(), SpeedTest.Listener {
             setOnClickListener { if (test == null) pickServer() }
         }
         right.addView(tileRow(down, up, server))
-        right.addView(tileRow(ping, jitter, loaded), lp().apply { topMargin = dp(10) })
+        right.addView(tileRow(ping, jitter, loaded), lp().apply { topMargin = dp(8) })
 
         verdict = text("Measures the speed this TV actually gets, using non-profit European speed test servers.",
-            19f, Colors.TEXT).apply { minLines = 4 }
-        right.addView(verdict, lp().apply { topMargin = dp(14) })
+            17f, Colors.TEXT).apply { minLines = 3; maxLines = 5; ellipsize = android.text.TextUtils.TruncateAt.END }
+        right.addView(verdict, lp().apply { topMargin = dp(8) })
 
-        right.addView(text("RECENT", 15f, Colors.TEXT2, Typeface.create("sans-serif-medium", Typeface.NORMAL)).apply {
+        right.addView(text("RECENT", 14f, Colors.TEXT2, Typeface.create("sans-serif-medium", Typeface.NORMAL)).apply {
             letterSpacing = 0.15f
-        }, lp().apply { topMargin = dp(10); bottomMargin = dp(4) })
-        historyRows = column()
-        right.addView(historyRows)
+        }, lp().apply { topMargin = dp(8); bottomMargin = dp(2) })
+        historyRows = FitColumn(this).apply { orientation = LinearLayout.VERTICAL }
+        right.addView(historyRows, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         root.addView(right, LinearLayout.LayoutParams(0, MATCH_PARENT, 1.25f))
 
         setContentView(root)
@@ -323,7 +334,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         historyRows.removeAllViews()
         val runs = history.entries().take(History.SHOWN)
         if (runs.isEmpty()) {
-            historyRows.addView(text("No runs yet. Run one per VPN server (or protocol) to see which streams best.", 18f, Colors.TEXT3))
+            historyRows.addView(text("No runs yet. Run one per VPN server (or protocol) to see which streams best.", 16f, Colors.TEXT3))
             return
         }
         val timeFmt = DateFormat.getTimeFormat(this)
@@ -332,9 +343,9 @@ class MainActivity : Activity(), SpeedTest.Listener {
         for (r in runs) {
             val d = Date(r.time)
             val whenText = if (dateFmt.format(d) == today) timeFmt.format(d) else dateFmt.format(d)
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(2), 0, dp(2)) }
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(1), 0, dp(1)) }
             fun cell(s: String, weight: Float, color: Int = Colors.TEXT) =
-                row.addView(text(s, 16f, color).apply {
+                row.addView(text(s, 15f, color).apply {
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                 }, LinearLayout.LayoutParams(0, WRAP_CONTENT, weight))
@@ -391,7 +402,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
     }
 
     /** A small focusable text button for the title row. */
-    private fun link(label: String, onClick: () -> Unit) = text(label, 18f, Colors.TEXT2).apply {
+    private fun link(label: String, onClick: () -> Unit) = text(label, 16f, Colors.TEXT2).apply {
         isFocusable = true
         isClickable = true
         setPadding(dp(14), dp(6), dp(14), dp(6))
@@ -462,15 +473,15 @@ class MainActivity : Activity(), SpeedTest.Listener {
     }
 
     private fun tile(label: String, accent: Int): Tile {
-        val value = text("—", 32f, Colors.TEXT, Typeface.create("sans-serif-light", Typeface.NORMAL))
-        val sub = text("", 16f, Colors.TEXT2).apply {
+        val value = text("—", 26f, Colors.TEXT, Typeface.create("sans-serif-light", Typeface.NORMAL))
+        val sub = text("", 14f, Colors.TEXT2).apply {
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END   // IPv6 exit addresses are long
         }
         val box = column().apply {
             background = rounded(Colors.CARD)
-            setPadding(dp(16), dp(8), dp(16), dp(8))
-            addView(text(label, 14f, accent, Typeface.create("sans-serif-medium", Typeface.NORMAL)).apply { letterSpacing = 0.12f })
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+            addView(text(label, 13f, accent, Typeface.create("sans-serif-medium", Typeface.NORMAL)).apply { letterSpacing = 0.12f })
             addView(value)
             addView(sub)
         }

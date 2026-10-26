@@ -75,7 +75,7 @@ class History(ctx: Context) {
         const val MAX = 20
 
         /** Rows shown on the main screen; the rest are under "All runs". */
-        const val SHOWN = 4
+        const val SHOWN = 3
 
         /** "Prague, Czechia · CESNET": the place alone can't tell the two Prague servers apart. */
         fun serverLabel(e: Entry) = listOf(e.place.ifEmpty { "server unknown" }, e.server).filter { it.isNotEmpty() }.joinToString(" · ")
