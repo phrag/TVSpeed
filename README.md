@@ -6,7 +6,10 @@ one button, big numbers. Plain Kotlin, no third-party dependencies. GPL-3.0.
 It answers "why does this buffer?" rather than just "how fast is my line?":
 
 - **Download / upload** over 6 / 4 parallel streams for 12 s each. The first 2 s
-  (TCP slow start) are dropped and the rest averaged.
+  (TCP slow start) are dropped and the rest averaged. That is what the line can carry.
+- **Single-stream download** for 8 s after it. Streaming apps fetch video over one or two
+  connections, and one connection often gets far less than six, especially through a VPN.
+  This is the figure the verdict is based on.
 - **Ping and jitter** at idle, measured as TCP connect time to the server. That is one
   round trip with no server processing in it.
 - **Latency under load.** Ping is measured again while each transfer runs. A large jump
@@ -21,11 +24,13 @@ It answers "why does this buffer?" rather than just "how fast is my line?":
   amber "Not private: no VPN", or "Offline" when an always-on VPN with "block connections
   without VPN" has dropped.
 - **Recent runs** with VPN runs highlighted. The last 20 are kept on the TV; **All runs**
-  ranks each way out (line, VPN on or off, and test server) by median speed, so you can see
-  which VPN server or protocol streams best, and has a **Clear history** button. The exit IP
+  ranks each way out (line, VPN on or off, tag and test server) by median speed, so you can see
+  which VPN server or protocol streams best. The **Tag** button sets a label (WireGuard, OpenVPN,
+  or your own text such as a server name) that is saved with each run until you change it, and has a **Clear history** button. The exit IP
   is shown live but never saved with a run or written to logcat.
 - **A verdict** in streaming terms, such as "Plenty for 4K60" or "Good for 1080p. 4K will
-  likely buffer", plus a warning when latency rises under load.
+  likely buffer", judged on the single-stream figure, plus a warning when one connection gets
+  much less than the line carries or when latency rises under load.
 
 Packet loss can't be measured over HTTP, so the app doesn't report it.
 

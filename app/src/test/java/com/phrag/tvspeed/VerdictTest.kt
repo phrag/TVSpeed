@@ -10,8 +10,12 @@ class VerdictTest {
     private val line = NetInfo("Ethernet", false, "")
     private val vpn = NetInfo("Ethernet", true, "")
 
+    // Single stream matches the parallel figure, so the shortfall line stays out of these.
     private fun result(down: Double, ping: Double = 20.0, downLoaded: Double = 30.0, upLoaded: Double = 30.0) =
-        SpeedTest.Result(ping, 2.0, downLoaded, upLoaded, down, 10.0, server)
+        SpeedTest.Result(
+            pingMs = ping, jitterMs = 2.0, downLoadedMs = downLoaded, upLoadedMs = upLoaded,
+            downMbps = down, streamMbps = down, upMbps = 10.0, downBytes = 0L, upBytes = 0L, server = server,
+        )
 
     private fun speedLine(down: Double) = MainActivity.verdictFor(result(down), line).lines().first()
 
@@ -59,7 +63,7 @@ class VerdictTest {
     }
 
     @Test fun linesAreJoinedByNewlines() {
-        assertEquals(2, MainActivity.verdictFor(result(50.0), line).lines().size)
-        assertEquals(3, MainActivity.verdictFor(result(50.0, downLoaded = 400.0), line).lines().size)
+        assertEquals(3, MainActivity.verdictFor(result(50.0), line).lines().size)
+        assertEquals(4, MainActivity.verdictFor(result(50.0, downLoaded = 400.0), line).lines().size)
     }
 }
