@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
+import android.os.Build
 
 /**
  * What the TV is connected through, shown next to every result: a test run
@@ -47,9 +48,20 @@ data class NetInfo(
                 in 5925..7125 -> "6 GHz"
                 else -> ""
             }
-            val link = if (info.linkSpeed > 0) "${info.linkSpeed} Mbps link" else ""
+            val rx = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) info.rxLinkSpeedMbps else -1
+            val link = linkLabel(rx, info.linkSpeed)
             val rssi = if (info.rssi in -127..-1) "${info.rssi} dBm" else ""
             return listOf(band, link, rssi).filter { it.isNotEmpty() }.joinToString(" · ")
+        }
+
+        /**
+         * The receive link rate, which is what limits a download or a stream. linkSpeed is
+         * the transmit rate, and an idle TV often sends at a few Mbps (e.g. 6) while
+         * receiving at hundreds. rxLinkSpeedMbps needs API 29, so older TVs fall back to it.
+         */
+        internal fun linkLabel(rxMbps: Int, legacyMbps: Int): String {
+            val mbps = if (rxMbps > 0) rxMbps else legacyMbps
+            return if (mbps > 0) "$mbps Mbps link" else ""
         }
     }
 }
