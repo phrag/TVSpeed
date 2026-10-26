@@ -40,6 +40,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
     }
 
     private lateinit var history: History
+    private val settings by lazy { Settings(this) }
     private val picks by lazy { getSharedPreferences("server", Context.MODE_PRIVATE) }
     /** The server picked in the UI, by name; null = automatic (nearest). */
     private var chosen: String?
@@ -123,7 +124,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         }
         titleRow.addView(tagLink, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(10) })
         titleRow.addView(link("All runs") { if (test == null) showAllRuns() })
-        titleRow.addView(link("Updates") { if (test == null) updater.showSettings() },
+        titleRow.addView(link("Settings") { if (test == null) showSettings() },
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(10) })
         right.addView(titleRow)
         networkLine = text("", 16f, Colors.TEXT2)
@@ -215,7 +216,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         button.text = "Stop"
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // adb: am start -n com.phrag.tvspeed/.MainActivity --es server GARR (see README)
-        test = SpeedTest(this, intent.getStringExtra("server") ?: chosen).also { it.start() }
+        test = SpeedTest(this, intent.getStringExtra("server") ?: chosen, settings.config).also { it.start() }
     }
 
     private fun stopTest(message: String) {
@@ -412,8 +413,63 @@ class MainActivity : Activity(), SpeedTest.Listener {
         setOnClickListener { onClick() }
     }
 
-    /** D-pad list: Automatic, then each server as "City, Country · operator". */
-    private fun pickServer() {
+    /**
+     * D-pad list of every option with its current value. OK on a row opens its choices;
+     * picking one (or Back) returns here, Back again closes.
+     */
+    private fun showSettings() {
+        val server = SpeedTest.SERVERS.find { it.name == chosen }?.let { "${it.city} · ${it.name}" } ?: "Auto (nearest)"
+        val rows = listOf<Pair<String, () -> Unit>>(
+            "Test server: $server" to { pickServer(then = ::showSettings) },
+            "Test length: ${settings.length.description}" to ::pickLength,
+            "Download streams: ${settings.downStreams}" to {
+                pickNumber("Download streams", Settings.DOWN_CHOICES, settings.downStreams, SpeedTest.DOWN_STREAMS) { settings.downStreams = it }
+            },
+            "Upload streams: ${settings.upStreams}" to {
+                pickNumber("Upload streams", Settings.UP_CHOICES, settings.upStreams, SpeedTest.UP_STREAMS) { settings.upStreams = it }
+            },
+            "Reset to defaults" to {
+                settings.reset()
+                chosen = null
+                showChoice()
+                showSettings()
+            },
+            "Updates…" to { updater.showSettings() },
+        )
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Settings")
+            .setItems(rows.map { it.first }.toTypedArray()) { _, i -> rows[i].second() }
+            .setPositiveButton("Close", null)
+            .show()
+    }
+
+    private fun pickLength() {
+        val all = Settings.Length.values()
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Test length")
+            .setSingleChoiceItems(all.map { it.description }.toTypedArray(), all.indexOf(settings.length)) { d, i ->
+                settings.length = all[i]
+                d.dismiss()
+            }
+            .setOnDismissListener { showSettings() }
+            .show()
+    }
+
+    /** Parallel streams: more fill a fast line or a VPN tunnel; fewer are gentler on a slow one. */
+    private fun pickNumber(title: String, choices: List<Int>, current: Int, default: Int, save: (Int) -> Unit) {
+        val labels = choices.map { if (it == default) "$it (default)" else "$it" }.toTypedArray()
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle(title)
+            .setSingleChoiceItems(labels, choices.indexOf(current)) { d, i ->
+                save(choices[i])
+                d.dismiss()
+            }
+            .setOnDismissListener { showSettings() }
+            .show()
+    }
+
+    /** D-pad list: Automatic, then each server as "City, Country · operator". [then] runs once it closes. */
+    private fun pickServer(then: (() -> Unit)? = null) {
         val names = listOf<String?>(null) + SpeedTest.SERVERS.map { it.name }
         val labels = arrayOf("Automatic (nearest)") + SpeedTest.SERVERS.map { "${it.place} · ${it.name}" }
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
@@ -423,6 +479,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
                 showChoice()
                 d.dismiss()
             }
+            .setOnDismissListener { then?.invoke() }
             .show()
     }
 
