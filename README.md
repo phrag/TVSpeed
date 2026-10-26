@@ -44,7 +44,7 @@ has no non-profit servers outside Europe): no key, no ads or tracking, and no CD
 the median of five TCP connect times to each of its addresses (IPv6 and IPv4). Behind a
 VPN that means nearest to the VPN exit. If that server refuses (HTTP 429/403, as rate
 limits on shared VPN exits do) or fails, the run starts over on the next one. To use one
-server every time, select the **Server** tile and pick it; the choice is remembered.
+server every time, select the **Server** tile (or **Settings**) and pick it; the choice is remembered.
 
 | Server | Operator | Kind | Base URL |
 |---|---|---|---|
@@ -63,6 +63,11 @@ server every time, select the **Server** tile and pick it; the choice is remembe
 | Upload | `POST <base>/empty.php` (8 MB streamed bodies) | `POST <base>/upload` |
 | Exit IP | `GET <base>/getIP.php`, without `isp`, so no third-party lookup | not available |
 | Latency | TCP connect to the server's port 443 | same |
+
+**Settings** (top right) holds the test options, all saved on the TV: the test server;
+the test length (Quick: 6 s per direction and 5 s single stream, Standard: 12 s and 8 s,
+Long: 20 s and 12 s; shorter uses less data); and the number of parallel download (default 6)
+and upload (default 4) streams. **Reset to defaults** puts them back.
 
 To test against one server from adb (no fallback), start the app with its name, then press the button:
 
@@ -88,7 +93,7 @@ signed with the committed `app/debug.keystore`, so new APKs install over old one
 The app checks the rolling release's `version.json` at most once a day and offers a newer
 build. The download's size and sha256 must match, and the APK must be this app signed with
 the installed app's key (or a key it was rotated to) before it goes to Android's installer.
-**Updates** (top right) shows the installed build, checks now, and turns automatic checks
+**Settings → Updates** (top right) shows the installed build, checks now, and turns automatic checks
 off. Note that the signing key is committed, so the signer check only protects against a
 tampered or swapped file, not against someone who builds their own APK with that key.
 
