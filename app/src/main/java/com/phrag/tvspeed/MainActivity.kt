@@ -34,6 +34,12 @@ class MainActivity : Activity(), SpeedTest.Listener {
     private var chosen: String?
         get() = picks.getString("name", null)?.takeIf { n -> SpeedTest.SERVERS.any { it.name == n } }
         set(v) = picks.edit().putString("name", v).apply()
+    private val tags by lazy { getSharedPreferences("tag", Context.MODE_PRIVATE) }
+    /** What the user says this run's VPN server or protocol is; saved with each run. Empty = none. */
+    private var tag: String
+        get() = tags.getString("tag", "") ?: ""
+        set(v) = tags.edit().putString("tag", v).apply()
+    private lateinit var tagLink: TextView
     private lateinit var gauge: GaugeView
     private lateinit var button: TextView
     private lateinit var networkLine: TextView
@@ -97,6 +103,8 @@ class MainActivity : Activity(), SpeedTest.Listener {
         val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         titleRow.addView(text("TV Speed", 32f, Colors.TEXT, Typeface.create("sans-serif-medium", Typeface.NORMAL)),
             LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        tagLink = link("") { if (test == null) pickTag() }
+        titleRow.addView(tagLink, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(10) })
         titleRow.addView(link("All runs") { if (test == null) showAllRuns() })
         titleRow.addView(link("Updates") { if (test == null) updater.showSettings() },
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(10) })
@@ -134,6 +142,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
 
         setContentView(root)
         resetTiles()
+        showTag()
         renderHistory()
         button.requestFocus()
     }
@@ -274,6 +283,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
             downMbps = result.downMbps, upMbps = result.upMbps,
             pingMs = result.pingMs, loadedMs = maxOf(result.downLoadedMs, result.upLoadedMs),
             vpn = n.vpn, network = n.transport, place = result.server.place,
+            server = result.server.name, tag = tag,
         ))
         renderHistory()
     }
@@ -324,7 +334,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
             cell("↓ ${fmtMbps(r.downMbps)}", 0.8f, Colors.DOWN)
             cell("↑ ${fmtMbps(r.upMbps)}", 0.7f, Colors.UP)
             cell("${fmtMs(r.pingMs)} / ${fmtMs(r.loadedMs)} ms", 1.2f, Colors.TEXT2)
-            cell(listOf(r.network, if (r.vpn) "VPN" else "", r.place).filter { it.isNotEmpty() }.joinToString(" · "),
+            cell(listOf(r.network, if (r.vpn) "VPN" else "", r.tag, r.place).filter { it.isNotEmpty() }.joinToString(" · "),
                 2.4f, if (r.vpn) Colors.WARN else Colors.TEXT2)
             historyRows.addView(row)
         }
@@ -347,7 +357,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         lines += "ALL RUNS"
         runs.forEach { r ->
             lines += "${fmt.format(Date(r.time))} · ↓ ${fmtMbps(r.downMbps)} ↑ ${fmtMbps(r.upMbps)} · ${fmtMs(r.pingMs)}/${fmtMs(r.loadedMs)} ms\n   " +
-                listOf(r.network, if (r.vpn) "VPN" else "no VPN", r.place).filter { it.isNotEmpty() }.joinToString(" · ")
+                listOf(r.network, if (r.vpn) "VPN" else "no VPN", r.tag, History.serverLabel(r)).filter { it.isNotEmpty() }.joinToString(" · ")
         }
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Recent runs (last ${History.MAX})")
@@ -393,6 +403,42 @@ class MainActivity : Activity(), SpeedTest.Listener {
                 d.dismiss()
             }
             .show()
+    }
+
+    /** D-pad list of common VPN protocols, or type your own; the pick is saved with every run until changed. */
+    private fun pickTag() {
+        val labels = arrayOf("None") + TAGS + "Custom…"
+        val current = TAGS.indexOf(tag).let { if (tag.isEmpty()) 0 else if (it >= 0) it + 1 else labels.size - 1 }
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Tag runs with the VPN server or protocol")
+            .setSingleChoiceItems(labels, current) { d, i ->
+                d.dismiss()
+                when (i) {
+                    0 -> { tag = ""; showTag() }
+                    labels.size - 1 -> typeTag()
+                    else -> { tag = labels[i]; showTag() }
+                }
+            }
+            .show()
+    }
+
+    private fun typeTag() {
+        val current = tag   // inside apply, "tag" would be View.getTag()
+        val input = android.widget.EditText(this).apply {
+            setText(current)
+            setSingleLine()
+            filters = arrayOf(android.text.InputFilter.LengthFilter(MAX_TAG))
+        }
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("VPN server or protocol, e.g. Prague #12")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ -> tag = input.text.toString().trim(); showTag() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showTag() {
+        tagLink.text = if (tag.isEmpty()) "Tag" else "Tag: $tag"
     }
 
     /** The idle Server tile: what the next run will use. */
@@ -454,6 +500,9 @@ class MainActivity : Activity(), SpeedTest.Listener {
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     companion object {
+        private const val MAX_TAG = 30
+        private val TAGS = listOf("WireGuard", "OpenVPN UDP", "OpenVPN TCP", "IKEv2")
+
         fun fmtMbps(v: Double) = if (v < 10) "%.1f".format(v) else "%.0f".format(v)
         fun fmtData(bytes: Long) = if (bytes < 1_000_000) "%.1f MB".format(bytes / 1e6) else "%.0f MB".format(bytes / 1e6)
 
