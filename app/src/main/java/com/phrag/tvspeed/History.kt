@@ -16,13 +16,19 @@ class History(ctx: Context) {
         val vpn: Boolean,
         val network: String,
         val place: String,   // where the test server is: "Rome, Italy"
-        val exitIp: String = "",   // public IP the server saw: the VPN exit, if one was on
+        val server: String = "",   // which server there: "CESNET". Older runs have none.
+        val tag: String = "",      // picked by the user: the VPN server or protocol used
     )
 
-    /** Runs that went out the same way (same VPN state and exit IP, or same line). */
+    /** Runs that went out the same way (same line, VPN state, tag and test server). The exit IP is never stored. */
     data class Group(val label: String, val vpn: Boolean, val runs: Int, val downMbps: Double, val upMbps: Double, val pingMs: Double)
 
     private val sp = ctx.getSharedPreferences("history", Context.MODE_PRIVATE)
+
+    init {
+        // Older versions stored the exit IP with each run; rewrite them without it.
+        if (sp.getString("runs", "")!!.contains("\"exit\"")) save(entries())
+    }
 
     fun entries(): List<Entry> = try {
         val arr = JSONArray(sp.getString("runs", "[]"))
@@ -38,21 +44,29 @@ class History(ctx: Context) {
                 network = o.optString("network"),
                 // Older runs stored a Cloudflare location code ("colo") instead.
                 place = o.optString("place").ifEmpty { coloPlace(o.optString("colo")) },
-                exitIp = o.optString("exit"),
+                server = o.optString("server"),
+                tag = o.optString("tag"),
             )
         }
     } catch (e: Exception) {
         emptyList()
     }
 
-    fun add(e: Entry) {
-        val all = (listOf(e) + entries()).take(MAX)
+    fun add(e: Entry) = save((listOf(e) + entries()).take(MAX))
+
+    /** Forgets every stored run. */
+    fun clear() {
+        sp.edit().remove("runs").apply()
+    }
+
+    private fun save(all: List<Entry>) {
         val arr = JSONArray()
         all.forEach {
             arr.put(JSONObject()
                 .put("time", it.time).put("down", it.downMbps).put("up", it.upMbps)
                 .put("ping", it.pingMs).put("loaded", it.loadedMs).put("vpn", it.vpn)
-                .put("network", it.network).put("place", it.place).put("exit", it.exitIp))
+                .put("network", it.network).put("place", it.place)
+                .put("server", it.server).put("tag", it.tag))
         }
         sp.edit().putString("runs", arr.toString()).apply()
     }
@@ -61,14 +75,17 @@ class History(ctx: Context) {
         const val MAX = 20
 
         /** Rows shown on the main screen; the rest are under "All runs". */
-        const val SHOWN = 4
+        const val SHOWN = 3
 
-        /** Median figures per way out (VPN exit IP, or the plain line), best download first. */
+        /** "Prague, Czechia · CESNET": the place alone can't tell the two Prague servers apart. */
+        fun serverLabel(e: Entry) = listOf(e.place.ifEmpty { "server unknown" }, e.server).filter { it.isNotEmpty() }.joinToString(" · ")
+
+        /** Median figures per way out (line, VPN state, tag and test server), best download first. */
         fun groups(runs: List<Entry>): List<Group> =
-            runs.groupBy { Triple(it.vpn, it.exitIp, it.network) }.map { (k, rs) ->
-                val (vpn, exit, network) = k
-                val label = listOf(network, if (vpn) "VPN" else "no VPN", exit.ifEmpty { "exit unknown" }).joinToString(" · ")
-                Group(label, vpn, rs.size, SpeedTest.median(rs.map { it.downMbps }),
+            runs.groupBy { listOf(it.vpn, it.network, it.tag, it.place, it.server) }.map { (_, rs) ->
+                val e = rs.first()
+                val label = listOf(e.network, if (e.vpn) "VPN" else "no VPN", e.tag, serverLabel(e)).filter { it.isNotEmpty() }.joinToString(" · ")
+                Group(label, e.vpn, rs.size, SpeedTest.median(rs.map { it.downMbps }),
                     SpeedTest.median(rs.map { it.upMbps }), SpeedTest.median(rs.map { it.pingMs }))
             }.sortedByDescending { it.downMbps }
 

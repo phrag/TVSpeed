@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.text.format.DateFormat
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -27,12 +28,62 @@ class MainActivity : Activity(), SpeedTest.Listener {
 
     private class Tile(val view: View, val value: TextView, val sub: TextView)
 
+    /** A column that hides any row that doesn't fully fit, so Recent never runs off the bottom of the screen. */
+    private class FitColumn(context: Context) : LinearLayout(context) {
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            super.onLayout(changed, l, t, r, b)
+            for (i in 0 until childCount) {
+                val c = getChildAt(i)
+                c.visibility = if (c.bottom > height) View.INVISIBLE else View.VISIBLE
+            }
+        }
+    }
+
+    /** A one-line row where [flex] takes whatever width the other children leave, so a long label shortens instead of pushing the rest off screen. */
+    private class FlexRow(context: Context, private val flex: TextView) : LinearLayout(context) {
+        override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+            var others = paddingLeft + paddingRight
+            for (i in 0 until childCount) {
+                val c = getChildAt(i)
+                if (c === flex || c.visibility == View.GONE) continue
+                c.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED), MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
+                val m = c.layoutParams as MarginLayoutParams
+                others += c.measuredWidth + m.leftMargin + m.rightMargin
+            }
+            val m = flex.layoutParams as MarginLayoutParams
+            flex.maxWidth = (MeasureSpec.getSize(widthSpec) - others - m.leftMargin - m.rightMargin).coerceAtLeast(0)
+            super.onMeasure(widthSpec, heightSpec)
+        }
+    }
+
     private lateinit var history: History
+    private val settings by lazy { Settings(this) }
     private val picks by lazy { getSharedPreferences("server", Context.MODE_PRIVATE) }
     /** The server picked in the UI, by name; null = automatic (nearest). */
     private var chosen: String?
         get() = picks.getString("name", null)?.takeIf { n -> SpeedTest.SERVERS.any { it.name == n } }
         set(v) = picks.edit().putString("name", v).apply()
+    /** Where Automatic looks first, picked in the UI; null = the country of the TV's time zone. Never the IP. */
+    private var nearChoice: SpeedTest.Place?
+        get() {
+            val country = picks.getString("near_country", null) ?: return null
+            val city = picks.getString("near_city", null)
+            return SpeedTest.PLACES.find { it.country == country && it.city == city }
+        }
+        set(v) = picks.edit().putString("near_country", v?.country).putString("near_city", v?.city).apply()
+    /** What Automatic prefers: the picked place, else the time zone's country if a server is there. */
+    private val near: SpeedTest.Place?
+        get() = nearChoice ?: SpeedTest.countryFor(timeZoneRegion())?.let { SpeedTest.Place(null, it, chosen = false) }
+    /** The server the last automatic run used; Auto keeps it while nothing is nearer. */
+    private var lastAuto: String?
+        get() = picks.getString("auto", null)
+        set(v) = picks.edit().putString("auto", v).apply()
+    private val tags by lazy { getSharedPreferences("tag", Context.MODE_PRIVATE) }
+    /** What the user says this run's VPN server or protocol is; saved with each run. Empty = none. */
+    private var tag: String
+        get() = tags.getString("tag", "") ?: ""
+        set(v) = tags.edit().putString("tag", v).apply()
+    private lateinit var tagLink: TextView
     private lateinit var gauge: GaugeView
     private lateinit var button: TextView
     private lateinit var networkLine: TextView
@@ -48,6 +99,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
     private lateinit var historyRows: LinearLayout
 
     private var test: SpeedTest? = null
+    private var autoRun = false
     private var net: NetInfo? = null
     private var phase: SpeedTest.Phase? = null
     private val idleSamples = ArrayList<Double>()
@@ -61,7 +113,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(48), dp(28), dp(48), dp(24))
+            setPadding(dp(48), dp(20), dp(48), dp(16))
             clipChildren = false
         }
 
@@ -71,7 +123,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         left.addView(gauge, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         button = TextView(this).apply {
             text = "Start test"
-            textSize = 22f
+            textSize = 26f
             gravity = Gravity.CENTER
             isFocusable = true
             isClickable = true
@@ -93,17 +145,24 @@ class MainActivity : Activity(), SpeedTest.Listener {
 
         // Right: title, network, tiles, verdict, history.
         val right = column().apply { setPadding(dp(40), 0, 0, 0) }
-        val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        titleRow.addView(text("TV Speed", 28f, Colors.TEXT, Typeface.create("sans-serif-medium", Typeface.NORMAL)),
-            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        tagLink = link("") { if (test == null) pickTag() }.apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        // The title and buttons keep their width; the tag takes what is left and shortens, so the row always fits on one line.
+        val titleRow = FlexRow(this, tagLink).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        titleRow.addView(text("TV Speed", 28f, Colors.TEXT, Typeface.create("sans-serif-medium", Typeface.NORMAL)).apply { maxLines = 1 },
+            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        titleRow.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        titleRow.addView(tagLink, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(10) })
         titleRow.addView(link("All runs") { if (test == null) showAllRuns() })
-        titleRow.addView(link("Updates") { if (test == null) updater.showSettings() },
+        titleRow.addView(link("Settings") { if (test == null) showSettings() },
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(10) })
         right.addView(titleRow)
-        networkLine = text("", 15f, Colors.TEXT2)
+        networkLine = text("", 16f, Colors.TEXT2)
         right.addView(networkLine)
-        privacyLine = text("", 15f, Colors.TEXT2).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
-        right.addView(privacyLine, lp().apply { bottomMargin = dp(12) })
+        privacyLine = text("", 16f, Colors.TEXT2).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        right.addView(privacyLine, lp().apply { bottomMargin = dp(8) })
 
         down = tile("DOWNLOAD", Colors.DOWN)
         up = tile("UPLOAD", Colors.UP)
@@ -118,21 +177,22 @@ class MainActivity : Activity(), SpeedTest.Listener {
             setOnClickListener { if (test == null) pickServer() }
         }
         right.addView(tileRow(down, up, server))
-        right.addView(tileRow(ping, jitter, loaded), lp().apply { topMargin = dp(10) })
+        right.addView(tileRow(ping, jitter, loaded), lp().apply { topMargin = dp(8) })
 
         verdict = text("Measures the speed this TV actually gets, using non-profit European speed test servers.",
-            16f, Colors.TEXT).apply { minLines = 3 }
-        right.addView(verdict, lp().apply { topMargin = dp(14) })
+            17f, Colors.TEXT).apply { minLines = 3; maxLines = 5; ellipsize = android.text.TextUtils.TruncateAt.END }
+        right.addView(verdict, lp().apply { topMargin = dp(8) })
 
-        right.addView(text("RECENT", 13f, Colors.TEXT2, Typeface.create("sans-serif-medium", Typeface.NORMAL)).apply {
+        right.addView(text("RECENT", 14f, Colors.TEXT2, Typeface.create("sans-serif-medium", Typeface.NORMAL)).apply {
             letterSpacing = 0.15f
-        }, lp().apply { topMargin = dp(10); bottomMargin = dp(4) })
-        historyRows = column()
-        right.addView(historyRows)
+        }, lp().apply { topMargin = dp(8); bottomMargin = dp(2) })
+        historyRows = FitColumn(this).apply { orientation = LinearLayout.VERTICAL }
+        right.addView(historyRows, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         root.addView(right, LinearLayout.LayoutParams(0, MATCH_PARENT, 1.25f))
 
         setContentView(root)
         resetTiles()
+        showTag()
         renderHistory()
         button.requestFocus()
     }
@@ -161,6 +221,16 @@ class MainActivity : Activity(), SpeedTest.Listener {
         privacyLine.setTextColor(color)
     }
 
+    /** Remote Play/Pause starts a test, or stops the running one, like the button. */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (event.repeatCount == 0) when (keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { if (test == null) startTest() else stopTest("Test stopped"); return true }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> { if (test == null) startTest(); return true }
+            KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_MEDIA_STOP -> { stopTest("Test stopped"); return true }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
     override fun onStop() {
         stopTest("Test stopped")
         super.onStop()
@@ -178,7 +248,9 @@ class MainActivity : Activity(), SpeedTest.Listener {
         button.text = "Stop"
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // adb: am start -n com.phrag.tvspeed/.MainActivity --es server GARR (see README)
-        test = SpeedTest(this, intent.getStringExtra("server") ?: chosen).also { it.start() }
+        val only = intent.getStringExtra("server") ?: chosen
+        autoRun = only == null
+        test = SpeedTest(this, only, settings.config, lastAuto, near = near).also { it.start() }
     }
 
     private fun stopTest(message: String) {
@@ -212,7 +284,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
     override fun onPhase(phase: SpeedTest.Phase) {
         this.phase = phase
         val color = when (phase) {
-            SpeedTest.Phase.DOWNLOAD -> Colors.DOWN
+            SpeedTest.Phase.DOWNLOAD, SpeedTest.Phase.STREAM -> Colors.DOWN
             SpeedTest.Phase.UPLOAD -> Colors.UP
             else -> Colors.PING
         }
@@ -238,14 +310,19 @@ class MainActivity : Activity(), SpeedTest.Listener {
     override fun onSpeed(phase: SpeedTest.Phase, mbps: Double) {
         gauge.setSpeed(mbps)
         gauge.setReading(fmtMbps(mbps), "Mbps", phase.label)
-        val tile = if (phase == SpeedTest.Phase.DOWNLOAD) down else up
-        tile.value.text = fmtMbps(mbps)
+        when (phase) {
+            SpeedTest.Phase.DOWNLOAD -> down.value.text = fmtMbps(mbps)
+            SpeedTest.Phase.STREAM -> down.sub.text = "Mbps · 1 stream ${fmtMbps(mbps)}"
+            else -> up.value.text = fmtMbps(mbps)
+        }
     }
 
     override fun onDone(result: SpeedTest.Result) {
         val n = net ?: NetInfo.read(this)
         finishRun()
+        if (autoRun) lastAuto = result.server.name
         down.value.text = fmtMbps(result.downMbps)
+        down.sub.text = "Mbps · 1 stream ${fmtMbps(result.streamMbps)}"
         up.value.text = fmtMbps(result.upMbps)
         ping.value.text = fmtMs(result.pingMs)
         jitter.value.text = fmtMs(result.jitterMs)
@@ -263,7 +340,8 @@ class MainActivity : Activity(), SpeedTest.Listener {
             time = System.currentTimeMillis(),
             downMbps = result.downMbps, upMbps = result.upMbps,
             pingMs = result.pingMs, loadedMs = maxOf(result.downLoadedMs, result.upLoadedMs),
-            vpn = n.vpn, network = n.transport, place = result.server.place, exitIp = result.server.ip,
+            vpn = n.vpn, network = n.transport, place = result.server.place,
+            server = result.server.name, tag = tag,
         ))
         renderHistory()
     }
@@ -271,7 +349,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
     override fun onError(message: String) {
         finishRun()
         verdict.setTextColor(Colors.WARN)
-        verdict.text = "Test failed: $message. Check the connection and try again."
+        verdict.text = plainError(message)
         gauge.setSpeed(0.0)
         gauge.setReading("—", "", "error")
     }
@@ -295,7 +373,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         historyRows.removeAllViews()
         val runs = history.entries().take(History.SHOWN)
         if (runs.isEmpty()) {
-            historyRows.addView(text("No runs yet. Run one per VPN server (or protocol) to see which streams best.", 15f, Colors.TEXT3))
+            historyRows.addView(text("No runs yet. Run one per VPN server (or protocol) to see which streams best.", 16f, Colors.TEXT3))
             return
         }
         val timeFmt = DateFormat.getTimeFormat(this)
@@ -304,9 +382,9 @@ class MainActivity : Activity(), SpeedTest.Listener {
         for (r in runs) {
             val d = Date(r.time)
             val whenText = if (dateFmt.format(d) == today) timeFmt.format(d) else dateFmt.format(d)
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(2), 0, dp(2)) }
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(1), 0, dp(1)) }
             fun cell(s: String, weight: Float, color: Int = Colors.TEXT) =
-                row.addView(text(s, 13f, color).apply {
+                row.addView(text(s, 15f, color).apply {
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                 }, LinearLayout.LayoutParams(0, WRAP_CONTENT, weight))
@@ -314,13 +392,13 @@ class MainActivity : Activity(), SpeedTest.Listener {
             cell("↓ ${fmtMbps(r.downMbps)}", 0.8f, Colors.DOWN)
             cell("↑ ${fmtMbps(r.upMbps)}", 0.7f, Colors.UP)
             cell("${fmtMs(r.pingMs)} / ${fmtMs(r.loadedMs)} ms", 1.2f, Colors.TEXT2)
-            cell(listOf(r.network, if (r.vpn) "VPN" else "", r.place).filter { it.isNotEmpty() }.joinToString(" · "),
+            cell(listOf(r.network, if (r.vpn) "VPN" else "", r.tag, r.place).filter { it.isNotEmpty() }.joinToString(" · "),
                 2.4f, if (r.vpn) Colors.WARN else Colors.TEXT2)
             historyRows.addView(row)
         }
     }
 
-    /** Every stored run, plus medians per way out (VPN exit or line), best first. */
+    /** Every stored run, plus medians per way out (line, VPN state and server), best first. */
     private fun showAllRuns() {
         val runs = history.entries()
         if (runs.isEmpty()) {
@@ -337,17 +415,33 @@ class MainActivity : Activity(), SpeedTest.Listener {
         lines += "ALL RUNS"
         runs.forEach { r ->
             lines += "${fmt.format(Date(r.time))} · ↓ ${fmtMbps(r.downMbps)} ↑ ${fmtMbps(r.upMbps)} · ${fmtMs(r.pingMs)}/${fmtMs(r.loadedMs)} ms\n   " +
-                listOf(r.network, if (r.vpn) "VPN" else "no VPN", r.exitIp, r.place).filter { it.isNotEmpty() }.joinToString(" · ")
+                listOf(r.network, if (r.vpn) "VPN" else "no VPN", r.tag, History.serverLabel(r)).filter { it.isNotEmpty() }.joinToString(" · ")
         }
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Recent runs (last ${History.MAX})")
             .setItems(lines.toTypedArray(), null)
             .setPositiveButton("Close", null)
+            .setNeutralButton("Clear history") { _, _ -> confirmClearHistory() }
             .show()
     }
 
+    private fun confirmClearHistory() {
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Clear history?")
+            .setMessage("Deletes all ${history.entries().size} stored runs from this TV.")
+            .setPositiveButton("Clear") { _, _ ->
+                history.clear()
+                renderHistory()
+                android.widget.Toast.makeText(this, "History cleared", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+            // The D-pad lands on Clear by default, so one stray OK would wipe every run.
+            .getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus()
+    }
+
     /** A small focusable text button for the title row. */
-    private fun link(label: String, onClick: () -> Unit) = text(label, 14f, Colors.TEXT2).apply {
+    private fun link(label: String, onClick: () -> Unit) = text(label, 16f, Colors.TEXT2).apply {
         isFocusable = true
         isClickable = true
         setPadding(dp(14), dp(6), dp(14), dp(6))
@@ -355,25 +449,156 @@ class MainActivity : Activity(), SpeedTest.Listener {
         setOnClickListener { onClick() }
     }
 
-    /** D-pad list: Automatic, then each server as "City, Country · operator". */
-    private fun pickServer() {
+    /**
+     * D-pad list of every option with its current value. OK on a row opens its choices;
+     * picking one (or Back) returns here, Back again closes.
+     */
+    private fun showSettings() {
+        val server = SpeedTest.SERVERS.find { it.name == chosen }?.let { "${it.city} · ${it.name}" } ?: "Auto (${autoLabel()})"
+        val rows = listOf<Pair<String, () -> Unit>>(
+            "Test server: $server" to { pickServer(then = ::showSettings) },
+            "Automatic looks first in: ${nearChoice?.label ?: "this TV's country"}" to { pickNear(then = ::showSettings) },
+            "Test length: ${settings.length.description}" to ::pickLength,
+            "Download streams: ${settings.downStreams}" to {
+                pickNumber("Download streams", Settings.DOWN_CHOICES, settings.downStreams, SpeedTest.DOWN_STREAMS) { settings.downStreams = it }
+            },
+            "Upload streams: ${settings.upStreams}" to {
+                pickNumber("Upload streams", Settings.UP_CHOICES, settings.upStreams, SpeedTest.UP_STREAMS) { settings.upStreams = it }
+            },
+            "Reset to defaults" to {
+                settings.reset()
+                chosen = null
+                nearChoice = null
+                showChoice()
+                showSettings()
+            },
+            "Updates…" to { updater.showSettings() },
+        )
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Settings")
+            .setItems(rows.map { it.first }.toTypedArray()) { _, i -> rows[i].second() }
+            .setPositiveButton("Close", null)
+            .show()
+    }
+
+    private fun pickLength() {
+        val all = Settings.Length.values()
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Test length")
+            .setSingleChoiceItems(all.map { it.description }.toTypedArray(), all.indexOf(settings.length)) { d, i ->
+                settings.length = all[i]
+                d.dismiss()
+            }
+            .setOnDismissListener { showSettings() }
+            .show()
+    }
+
+    /** Parallel streams: more fill a fast line or a VPN tunnel; fewer are gentler on a slow one. */
+    private fun pickNumber(title: String, choices: List<Int>, current: Int, default: Int, save: (Int) -> Unit) {
+        val labels = choices.map { if (it == default) "$it (default)" else "$it" }.toTypedArray()
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle(title)
+            .setSingleChoiceItems(labels, choices.indexOf(current)) { d, i ->
+                save(choices[i])
+                d.dismiss()
+            }
+            .setOnDismissListener { showSettings() }
+            .show()
+    }
+
+    /**
+     * D-pad list: Automatic, where Automatic looks first, then each server as "City, Country · operator".
+     * [then] runs once it closes (after the place list, if that was opened from here).
+     */
+    private fun pickServer(then: (() -> Unit)? = null) {
         val names = listOf<String?>(null) + SpeedTest.SERVERS.map { it.name }
-        val labels = arrayOf("Automatic (nearest)") + SpeedTest.SERVERS.map { "${it.place} · ${it.name}" }
+        val labels = arrayOf("Automatic (${autoLabel()})", "Automatic looks first in…") +
+            SpeedTest.SERVERS.map { "${it.place} · ${it.name}" }
+        val current = names.indexOf(chosen).let { if (it == 0) 0 else it + 1 }
+        var next = then
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Test server")
-            .setSingleChoiceItems(labels, names.indexOf(chosen)) { d, i ->
-                chosen = names[i]
+            .setSingleChoiceItems(labels, current) { d, i ->
+                if (i == 1) {
+                    next = null   // the place list hands [then] on when it closes
+                    d.dismiss()
+                    pickNear(then)
+                    return@setSingleChoiceItems
+                }
+                chosen = names[if (i == 0) 0 else i - 1]
                 showChoice()
                 d.dismiss()
             }
+            .setOnDismissListener { next?.invoke() }
             .show()
+    }
+
+    /**
+     * D-pad list: the time zone's country, or any country or city that has a server. Picking one
+     * turns Automatic on. [then] runs once it closes.
+     */
+    private fun pickNear(then: (() -> Unit)? = null) {
+        val tz = SpeedTest.countryFor(timeZoneRegion())
+        val places = listOf<SpeedTest.Place?>(null) + SpeedTest.PLACES
+        val labels = arrayOf("This TV's country (${tz ?: "no server there, so nearest"})") +
+            SpeedTest.PLACES.map { it.label }
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Automatic looks first in")
+            .setSingleChoiceItems(labels, places.indexOf(nearChoice)) { d, i ->
+                nearChoice = places[i]
+                chosen = null
+                showChoice()
+                d.dismiss()
+            }
+            .setOnDismissListener { then?.invoke() }
+            .show()
+    }
+
+    /** "Germany first, else nearest", or "nearest" when Automatic has no place to prefer. */
+    private fun autoLabel() = near?.let { "${it.label} first, else nearest" } ?: "nearest"
+
+    /** D-pad list of common VPN protocols, or type your own; the pick is saved with every run until changed. */
+    private fun pickTag() {
+        val labels = arrayOf("None") + TAGS + "Custom…"
+        val current = TAGS.indexOf(tag).let { if (tag.isEmpty()) 0 else if (it >= 0) it + 1 else labels.size - 1 }
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Tag runs with the VPN server or protocol")
+            .setSingleChoiceItems(labels, current) { d, i ->
+                d.dismiss()
+                when (i) {
+                    0 -> { tag = ""; showTag() }
+                    labels.size - 1 -> typeTag()
+                    else -> { tag = labels[i]; showTag() }
+                }
+            }
+            .show()
+    }
+
+    private fun typeTag() {
+        val current = tag   // inside apply, "tag" would be View.getTag()
+        val input = android.widget.EditText(this).apply {
+            setText(current)
+            setSingleLine()
+            filters = arrayOf(android.text.InputFilter.LengthFilter(MAX_TAG))
+        }
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("VPN server or protocol, e.g. Prague #12")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ -> tag = input.text.toString().trim(); showTag() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showTag() {
+        tagLink.text = if (tag.isEmpty()) "Tag" else "Tag: $tag"
     }
 
     /** The idle Server tile: what the next run will use. */
     private fun showChoice() {
         val b = SpeedTest.SERVERS.find { it.name == chosen }
         server.value.text = b?.city ?: "Auto"
-        server.sub.text = b?.let { "${it.country} · ${it.name}" } ?: "nearest of ${SpeedTest.SERVERS.size}"
+        server.sub.text = b?.let { "${it.country} · ${it.name}" } ?: near?.let { "${it.label} first" }
+            ?: "nearest of ${SpeedTest.SERVERS.size}"
     }
 
     private fun tileBackground() = StateListDrawable().apply {
@@ -382,15 +607,15 @@ class MainActivity : Activity(), SpeedTest.Listener {
     }
 
     private fun tile(label: String, accent: Int): Tile {
-        val value = text("—", 28f, Colors.TEXT, Typeface.create("sans-serif-light", Typeface.NORMAL))
-        val sub = text("", 13f, Colors.TEXT2).apply {
+        val value = text("—", 26f, Colors.TEXT, Typeface.create("sans-serif-light", Typeface.NORMAL))
+        val sub = text("", 14f, Colors.TEXT2).apply {
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END   // IPv6 exit addresses are long
         }
         val box = column().apply {
             background = rounded(Colors.CARD)
-            setPadding(dp(16), dp(8), dp(16), dp(8))
-            addView(text(label, 11f, accent, Typeface.create("sans-serif-medium", Typeface.NORMAL)).apply { letterSpacing = 0.12f })
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+            addView(text(label, 13f, accent, Typeface.create("sans-serif-medium", Typeface.NORMAL)).apply { letterSpacing = 0.12f })
             addView(value)
             addView(sub)
         }
@@ -428,26 +653,65 @@ class MainActivity : Activity(), SpeedTest.Listener {
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     companion object {
+        /** The ISO country of the TV's time zone ("Europe/Berlin" → "DE"), read on the device; null if it has none. */
+        fun timeZoneRegion(): String? = try {
+            android.icu.util.TimeZone.getRegion(java.util.TimeZone.getDefault().id).takeIf { it.length == 2 }
+        } catch (e: IllegalArgumentException) {
+            null   // a custom zone such as "GMT+01:00"
+        }
+
+        /** Below this share of the parallel figure, the verdict says single streams are held back. */
+        private const val SINGLE_STREAM_SHORTFALL = 0.6
+        private const val MAX_TAG = 30
+        private val TAGS = listOf("WireGuard", "OpenVPN UDP", "OpenVPN TCP", "IKEv2")
+
         fun fmtMbps(v: Double) = if (v < 10) "%.1f".format(v) else "%.0f".format(v)
+        fun fmtData(bytes: Long) = if (bytes < 1_000_000) "%.1f MB".format(bytes / 1e6) else "%.0f MB".format(bytes / 1e6)
+
+        /** Turns a technical failure into something a person on a sofa can act on. */
+        fun plainError(message: String): String {
+            val m = message.lowercase()
+            val why = when {
+                "refused" in m || "http 429" in m || "http 403" in m ->
+                    "The test server turned us away, probably because too many tests came from this connection or VPN. " +
+                        (Regex("retry in about (\\d+) min").find(m)?.let { "Try again in about ${it.groupValues[1]} min." } ?: "Wait a few minutes, or pick another server.")
+                "no speed-test server reachable" in m || "no reply" in m || "every server failed" in m ->
+                    "Couldn't reach any test server. Check that the TV is online, then try again."
+                "no data transferred" in m ->
+                    "The connection opened but no data came through. It may have dropped; try again."
+                "unknown server" in m -> "That test server isn't available. Pick another one."
+                else -> "Something went wrong with the connection. Try again."
+            }
+            return "Test failed. $why"
+        }
+
         fun fmtMs(v: Double) = if (v <= 0) "—" else "%.0f".format(v)
 
-        /** What the numbers mean for streaming on this TV. */
+        /**
+         * What the numbers mean for streaming on this TV. Judged on the single-stream
+         * figure: video apps fetch over one or two connections, not six.
+         */
         fun verdictFor(r: SpeedTest.Result, net: NetInfo): String {
             val lines = ArrayList<String>()
+            val s = r.streamMbps
             lines += when {
-                r.downMbps >= 80 -> "Plenty for 4K60 streaming, even at the highest bitrates."
-                r.downMbps >= 25 -> "Good for 4K streaming. Very high-bitrate 4K60 may need more."
-                r.downMbps >= 15 -> "Enough for 4K on most services; high-bitrate 4K60 may buffer."
-                r.downMbps >= 5 -> "Good for 1080p. 4K will likely buffer."
-                r.downMbps >= 3 -> "OK for 720p / SD video only."
+                s >= 80 -> "Plenty for 4K60 streaming, even at the highest bitrates."
+                s >= 25 -> "Good for 4K streaming. Very high-bitrate 4K60 may need more."
+                s >= 15 -> "Enough for 4K on most services; high-bitrate 4K60 may buffer."
+                s >= 5 -> "Good for 1080p. 4K will likely buffer."
+                s >= 3 -> "OK for 720p / SD video only."
                 else -> "Too slow for smooth HD video."
             }
+            if (s < r.downMbps * SINGLE_STREAM_SHORTFALL) lines += "One connection, as a video app uses, got only " +
+                "${fmtMbps(s)} of the ${fmtMbps(r.downMbps)} Mbps the line carries" +
+                (if (net.vpn) ": VPN tunnels often hold single connections back." else ".")
             val bloat = maxOf(r.downLoadedMs, r.upLoadedMs) - r.pingMs
             if (bloat > 100) lines += "Latency rises by ${bloat.toInt()} ms under load, so expect slow starts and " +
                 "stutter on live streams and calls."
             if (net.vpn) lines += "Measured through the VPN (exit IP ${r.server.ip.ifEmpty { "unknown" }}). " +
                 "Try another VPN server or protocol to compare; All runs ranks them."
             else lines += "No VPN: this ran over your own connection, so sites see your real IP."
+            lines += "Data used: ${fmtData(r.downBytes + r.upBytes)} (↓ ${fmtData(r.downBytes)} · ↑ ${fmtData(r.upBytes)})."
             return lines.joinToString("\n")
         }
 
