@@ -21,8 +21,9 @@ It answers "why does this buffer?" rather than just "how fast is my line?":
   amber "Not private: no VPN", or "Offline" when an always-on VPN with "block connections
   without VPN" has dropped.
 - **Recent runs** with VPN runs highlighted. The last 20 are kept on the TV; **All runs**
-  ranks each way out (line, VPN on or off, and test server) by median speed, so you can see
-  which VPN server or protocol streams best, and has a **Clear history** button. The exit IP
+  ranks each way out (line, VPN on or off, tag and test server) by median speed, so you can see
+  which VPN server or protocol streams best. The **Tag** button sets a label (WireGuard, OpenVPN,
+  or your own text such as a server name) that is saved with each run until you change it, and has a **Clear history** button. The exit IP
   is shown live but never saved with a run or written to logcat.
 - **A verdict** in streaming terms, such as "Plenty for 4K60" or "Good for 1080p. 4K will
   likely buffer", plus a warning when latency rises under load.
