@@ -50,6 +50,8 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
         val upLoadedMs: Double,
         val downMbps: Double,
         val upMbps: Double,
+        val downBytes: Long,
+        val upBytes: Long,
         val server: Server,
     )
 
@@ -206,6 +208,8 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
             upLoadedMs = up.loadedMs,
             downMbps = down.mbps,
             upMbps = up.mbps,
+            downBytes = down.bytes,
+            upBytes = up.bytes,
             server = server,
         )
         Log.i(TAG, "result: $result")
@@ -214,7 +218,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
 
     // ---- transfers --------------------------------------------------------
 
-    private class Transfer(val mbps: Double, val loadedMs: Double)
+    private class Transfer(val mbps: Double, val loadedMs: Double, val bytes: Long = 0L)
 
     /** Shared state for one phase's worker threads. */
     private inner class Streams {
@@ -294,7 +298,7 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
         val result = if (warmT > 0 && end > warmT) mbps(total - warmBytes, end - warmT) else mbps(total, end - t0)
         val loadedMedian = synchronized(loaded) { if (loaded.isEmpty()) 0.0 else median(loaded) }
         Log.i(TAG, "${phase.name}: ${"%.1f".format(result)} Mbit/s, ${total / 1_000_000} MB, loaded ${"%.0f".format(loadedMedian)} ms, ${s.errors.get()} errors")
-        return Transfer(result, loadedMedian)
+        return Transfer(result, loadedMedian, total)
     }
 
     private fun downloadLoop(b: Backend, s: Streams) {
