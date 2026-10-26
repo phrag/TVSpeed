@@ -56,6 +56,9 @@ class SpeedTest(private val listener: Listener, private val only: String? = null
     /** The server a run uses, and the public IP it sees us at (VPN exit or line). */
     data class Server(val name: String, val city: String, val country: String, val ip: String) {
         val place get() = "$city, $country"
+
+        // Logged with every result; the exit IP stays out of logcat.
+        override fun toString() = "Server(name=$name, city=$city, country=$country)"
     }
 
     /**
