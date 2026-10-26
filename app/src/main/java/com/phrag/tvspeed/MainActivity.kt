@@ -112,8 +112,10 @@ class MainActivity : Activity(), SpeedTest.Listener {
         // Right: title, network, tiles, verdict, history.
         val right = column().apply { setPadding(dp(40), 0, 0, 0) }
         val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        titleRow.addView(text("TV Speed", 28f, Colors.TEXT, Typeface.create("sans-serif-medium", Typeface.NORMAL)),
-            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        // The title is measured first and never shrinks; a long tag gives way to it, so the row stays one line.
+        titleRow.addView(text("TV Speed", 28f, Colors.TEXT, Typeface.create("sans-serif-medium", Typeface.NORMAL)).apply { maxLines = 1 },
+            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        titleRow.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         tagLink = link("") { if (test == null) pickTag() }.apply {
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
