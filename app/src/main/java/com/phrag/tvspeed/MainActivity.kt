@@ -262,7 +262,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
             time = System.currentTimeMillis(),
             downMbps = result.downMbps, upMbps = result.upMbps,
             pingMs = result.pingMs, loadedMs = maxOf(result.downLoadedMs, result.upLoadedMs),
-            vpn = n.vpn, network = n.transport, place = result.server.place, exitIp = result.server.ip,
+            vpn = n.vpn, network = n.transport, place = result.server.place,
         ))
         renderHistory()
     }
@@ -319,7 +319,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         }
     }
 
-    /** Every stored run, plus medians per way out (VPN exit or line), best first. */
+    /** Every stored run, plus medians per way out (line, VPN state and server), best first. */
     private fun showAllRuns() {
         val runs = history.entries()
         if (runs.isEmpty()) {
@@ -336,12 +336,26 @@ class MainActivity : Activity(), SpeedTest.Listener {
         lines += "ALL RUNS"
         runs.forEach { r ->
             lines += "${fmt.format(Date(r.time))} · ↓ ${fmtMbps(r.downMbps)} ↑ ${fmtMbps(r.upMbps)} · ${fmtMs(r.pingMs)}/${fmtMs(r.loadedMs)} ms\n   " +
-                listOf(r.network, if (r.vpn) "VPN" else "no VPN", r.exitIp, r.place).filter { it.isNotEmpty() }.joinToString(" · ")
+                listOf(r.network, if (r.vpn) "VPN" else "no VPN", r.place).filter { it.isNotEmpty() }.joinToString(" · ")
         }
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Recent runs (last ${History.MAX})")
             .setItems(lines.toTypedArray(), null)
             .setPositiveButton("Close", null)
+            .setNeutralButton("Clear history") { _, _ -> confirmClearHistory() }
+            .show()
+    }
+
+    private fun confirmClearHistory() {
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Clear history?")
+            .setMessage("Deletes all ${history.entries().size} stored runs from this TV.")
+            .setPositiveButton("Clear") { _, _ ->
+                history.clear()
+                renderHistory()
+                android.widget.Toast.makeText(this, "History cleared", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
             .show()
     }
 
