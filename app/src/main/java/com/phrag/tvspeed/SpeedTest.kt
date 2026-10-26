@@ -23,9 +23,10 @@ import org.json.JSONObject
 /**
  * One speed test run against public speed-test servers run by European
  * non-profits and research networks ([SERVERS]: free, no key, no tracking,
- * no third-party IP lookups). The nearest one by connect time from this
- * connection (VPN exit included) is used; if it refuses (rate limit) or
- * fails, the run starts over on the next.
+ * no third-party IP lookups). Automatic picks a server in the [near] city,
+ * else in its country, else the nearest one by connect time from this
+ * connection (VPN exit included); if it refuses (rate limit) or fails, the
+ * run starts over on the next.
  *
  * Phases: idle latency → download → single stream → upload. Latency is TCP
  * connect time to the edge (exactly one round trip, no server processing),
@@ -52,7 +53,18 @@ class SpeedTest(
     private val config: Config = Config(),
     private val lastAuto: String? = null,
     private val clock: Clock = Clock.System,
+    private val near: Place? = null,
 ) {
+
+    /**
+     * Where Automatic looks first: servers in [city] (if set), then in [country], spelled as in
+     * [SERVERS]. Never derived from the IP. [chosen]: the user picked it, so it wins even over a
+     * much nearer server; otherwise (a guess from the TV's time zone) a server in the place is
+     * only preferred when it is about as near as the nearest, since a VPN exit can be far away.
+     */
+    data class Place(val city: String?, val country: String, val chosen: Boolean) {
+        val label get() = if (city != null) "$city, $country" else country
+    }
 
     /** Time source, so the throughput maths can run on a fake clock in JVM tests. */
     interface Clock {
@@ -217,7 +229,10 @@ class SpeedTest(
         val byConnect = candidates.mapNotNull { b -> found[b]?.let { Triple(b, it.first, it.second) } }
             .sortedBy { it.third }
         if (cancelled.get()) throw InterruptedException()
-        return refine(byConnect.map { it.first to it.second }, tiedCount(byConnect.map { it.third }))
+        val connectMs = byConnect.associate { it.first.name to it.third }
+        val refined = refine(byConnect.map { it.first to it.second }, tiedCount(byConnect.map { it.third }))
+        // preferPlace keeps the order within the place, so Auto stays on the same server there too.
+        return preferPlace(refined, connectMs, near)
     }
 
     /**
@@ -560,6 +575,40 @@ class SpeedTest(
             return if (clearlyFaster) sorted else listOf(leader) + sorted.filter { it !== leader }
         }
 
+        /**
+         * Moves servers in [place] to the front of [ranked] (nearest first): those in its city,
+         * then those in its country, each keeping their order; the rest follow. Unless the user
+         * chose the place, a server only counts as in it while its [connectMs] (by backend name)
+         * is within [PLACE_SLACK_MS] of the nearest server's: a VPN exit abroad keeps the nearest.
+         */
+        internal fun preferPlace(
+            ranked: List<Pair<Backend, InetAddress>>, connectMs: Map<String, Double>, place: Place?,
+        ): List<Pair<Backend, InetAddress>> {
+            if (place == null) return ranked
+            val nearestMs = connectMs.values.minOrNull()
+            fun near(b: Backend) = place.chosen || nearestMs == null ||
+                (connectMs[b.name] ?: Double.MAX_VALUE) <= nearestMs + PLACE_SLACK_MS
+            fun inCountry(b: Backend) = b.country.equals(place.country, ignoreCase = true) && near(b)
+            fun inCity(b: Backend) = place.city != null && b.city.equals(place.city, ignoreCase = true) && inCountry(b)
+            val city = ranked.filter { inCity(it.first) }
+            val country = ranked.filter { inCountry(it.first) && it !in city }
+            return city + country + ranked.filter { it !in city && it !in country }
+        }
+
+        /** ISO 3166 codes of the countries in [SERVERS], to read a country off the TV's time zone. */
+        internal val COUNTRY_CODES = mapOf(
+            "CZ" to "Czechia", "DE" to "Germany", "ES" to "Spain", "IT" to "Italy", "RS" to "Serbia", "US" to "USA",
+        )
+
+        /** The [SERVERS] country for an ISO region code ("DE" → "Germany"); null if no server is there. */
+        fun countryFor(region: String?): String? = region?.let { COUNTRY_CODES[it.uppercase()] }
+
+        /** Every country in [SERVERS], then every city as "City, Country": the places Automatic can prefer. */
+        val PLACES: List<Place> get() =
+            SERVERS.map { Place(null, it.country, chosen = true) }.distinct() +
+                SERVERS.map { Place(it.city, it.country, chosen = true) }.distinct()
+
+        private const val PLACE_SLACK_MS = 40.0   // a guessed place's server may be this much further than the nearest
         private const val RANK_SAMPLES = 5   // connect times per address when picking the nearest
         private const val REFINE_TOP = 3   // nearest by connect time that get an HTTPS timing as well
         private const val REFINE_SAMPLES = 3

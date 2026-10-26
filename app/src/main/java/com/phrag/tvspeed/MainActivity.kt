@@ -63,6 +63,17 @@ class MainActivity : Activity(), SpeedTest.Listener {
     private var chosen: String?
         get() = picks.getString("name", null)?.takeIf { n -> SpeedTest.SERVERS.any { it.name == n } }
         set(v) = picks.edit().putString("name", v).apply()
+    /** Where Automatic looks first, picked in the UI; null = the country of the TV's time zone. Never the IP. */
+    private var nearChoice: SpeedTest.Place?
+        get() {
+            val country = picks.getString("near_country", null) ?: return null
+            val city = picks.getString("near_city", null)
+            return SpeedTest.PLACES.find { it.country == country && it.city == city }
+        }
+        set(v) = picks.edit().putString("near_country", v?.country).putString("near_city", v?.city).apply()
+    /** What Automatic prefers: the picked place, else the time zone's country if a server is there. */
+    private val near: SpeedTest.Place?
+        get() = nearChoice ?: SpeedTest.countryFor(timeZoneRegion())?.let { SpeedTest.Place(null, it, chosen = false) }
     /** The server the last automatic run used; Auto keeps it while nothing is nearer. */
     private var lastAuto: String?
         get() = picks.getString("auto", null)
@@ -239,7 +250,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         // adb: am start -n com.phrag.tvspeed/.MainActivity --es server GARR (see README)
         val only = intent.getStringExtra("server") ?: chosen
         autoRun = only == null
-        test = SpeedTest(this, only, settings.config, lastAuto).also { it.start() }
+        test = SpeedTest(this, only, settings.config, lastAuto, near = near).also { it.start() }
     }
 
     private fun stopTest(message: String) {
@@ -442,9 +453,10 @@ class MainActivity : Activity(), SpeedTest.Listener {
      * picking one (or Back) returns here, Back again closes.
      */
     private fun showSettings() {
-        val server = SpeedTest.SERVERS.find { it.name == chosen }?.let { "${it.city} · ${it.name}" } ?: "Auto (nearest)"
+        val server = SpeedTest.SERVERS.find { it.name == chosen }?.let { "${it.city} · ${it.name}" } ?: "Auto (${autoLabel()})"
         val rows = listOf<Pair<String, () -> Unit>>(
             "Test server: $server" to { pickServer(then = ::showSettings) },
+            "Automatic looks first in: ${nearChoice?.label ?: "this TV's country"}" to { pickNear(then = ::showSettings) },
             "Test length: ${settings.length.description}" to ::pickLength,
             "Download streams: ${settings.downStreams}" to {
                 pickNumber("Download streams", Settings.DOWN_CHOICES, settings.downStreams, SpeedTest.DOWN_STREAMS) { settings.downStreams = it }
@@ -455,6 +467,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
             "Reset to defaults" to {
                 settings.reset()
                 chosen = null
+                nearChoice = null
                 showChoice()
                 showSettings()
             },
@@ -492,20 +505,56 @@ class MainActivity : Activity(), SpeedTest.Listener {
             .show()
     }
 
-    /** D-pad list: Automatic, then each server as "City, Country · operator". [then] runs once it closes. */
+    /**
+     * D-pad list: Automatic, where Automatic looks first, then each server as "City, Country · operator".
+     * [then] runs once it closes (after the place list, if that was opened from here).
+     */
     private fun pickServer(then: (() -> Unit)? = null) {
         val names = listOf<String?>(null) + SpeedTest.SERVERS.map { it.name }
-        val labels = arrayOf("Automatic (nearest)") + SpeedTest.SERVERS.map { "${it.place} · ${it.name}" }
+        val labels = arrayOf("Automatic (${autoLabel()})", "Automatic looks first in…") +
+            SpeedTest.SERVERS.map { "${it.place} · ${it.name}" }
+        val current = names.indexOf(chosen).let { if (it == 0) 0 else it + 1 }
+        var next = then
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Test server")
-            .setSingleChoiceItems(labels, names.indexOf(chosen)) { d, i ->
-                chosen = names[i]
+            .setSingleChoiceItems(labels, current) { d, i ->
+                if (i == 1) {
+                    next = null   // the place list hands [then] on when it closes
+                    d.dismiss()
+                    pickNear(then)
+                    return@setSingleChoiceItems
+                }
+                chosen = names[if (i == 0) 0 else i - 1]
+                showChoice()
+                d.dismiss()
+            }
+            .setOnDismissListener { next?.invoke() }
+            .show()
+    }
+
+    /**
+     * D-pad list: the time zone's country, or any country or city that has a server. Picking one
+     * turns Automatic on. [then] runs once it closes.
+     */
+    private fun pickNear(then: (() -> Unit)? = null) {
+        val tz = SpeedTest.countryFor(timeZoneRegion())
+        val places = listOf<SpeedTest.Place?>(null) + SpeedTest.PLACES
+        val labels = arrayOf("This TV's country (${tz ?: "no server there, so nearest"})") +
+            SpeedTest.PLACES.map { it.label }
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Automatic looks first in")
+            .setSingleChoiceItems(labels, places.indexOf(nearChoice)) { d, i ->
+                nearChoice = places[i]
+                chosen = null
                 showChoice()
                 d.dismiss()
             }
             .setOnDismissListener { then?.invoke() }
             .show()
     }
+
+    /** "Germany first, else nearest", or "nearest" when Automatic has no place to prefer. */
+    private fun autoLabel() = near?.let { "${it.label} first, else nearest" } ?: "nearest"
 
     /** D-pad list of common VPN protocols, or type your own; the pick is saved with every run until changed. */
     private fun pickTag() {
@@ -547,7 +596,8 @@ class MainActivity : Activity(), SpeedTest.Listener {
     private fun showChoice() {
         val b = SpeedTest.SERVERS.find { it.name == chosen }
         server.value.text = b?.city ?: "Auto"
-        server.sub.text = b?.let { "${it.country} · ${it.name}" } ?: "nearest of ${SpeedTest.SERVERS.size}"
+        server.sub.text = b?.let { "${it.country} · ${it.name}" } ?: near?.let { "${it.label} first" }
+            ?: "nearest of ${SpeedTest.SERVERS.size}"
     }
 
     private fun tileBackground() = StateListDrawable().apply {
@@ -602,6 +652,13 @@ class MainActivity : Activity(), SpeedTest.Listener {
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     companion object {
+        /** The ISO country of the TV's time zone ("Europe/Berlin" → "DE"), read on the device; null if it has none. */
+        fun timeZoneRegion(): String? = try {
+            android.icu.util.TimeZone.getRegion(java.util.TimeZone.getDefault().id).takeIf { it.length == 2 }
+        } catch (e: IllegalArgumentException) {
+            null   // a custom zone such as "GMT+01:00"
+        }
+
         /** Below this share of the parallel figure, the verdict says single streams are held back. */
         private const val SINGLE_STREAM_SHORTFALL = 0.6
         private const val MAX_TAG = 30
