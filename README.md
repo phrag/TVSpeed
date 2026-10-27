@@ -1,5 +1,10 @@
 # TV Speed
 
+[![Build](https://img.shields.io/github/actions/workflow/status/phrag/TVSpeed/build.yml?branch=main&label=Build)](https://github.com/phrag/TVSpeed/actions/workflows/build.yml)
+[![Licence: GPL-3.0](https://img.shields.io/github/license/phrag/TVSpeed)](LICENSE)
+![Android TV 8.0+](https://img.shields.io/badge/Android%20TV-8.0%2B-3DDC84?logo=android&logoColor=white)
+![No Google Play Services](https://img.shields.io/badge/Google%20Play%20Services-none-2ea44f)
+
 A speed test for Android TV / NVIDIA Shield that you can drive with the remote:
 one button, big numbers. Plain Kotlin, no third-party dependencies. GPL-3.0.
 
