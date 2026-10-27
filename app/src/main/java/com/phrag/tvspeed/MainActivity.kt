@@ -85,6 +85,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         set(v) = tags.edit().putString("tag", v).apply()
     private lateinit var tagLink: TextView
     private lateinit var gauge: GaugeView
+    private lateinit var trendLine: TextView
     private lateinit var button: TextView
     private lateinit var networkLine: TextView
     private lateinit var privacyLine: TextView
@@ -121,6 +122,14 @@ class MainActivity : Activity(), SpeedTest.Listener {
         val left = column().apply { clipChildren = false; clipToPadding = false }
         gauge = GaugeView(this)
         left.addView(gauge, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        // How the last run compares with what is usual this way out. Always one line, so the gauge never jumps.
+        trendLine = text("", 16f, Colors.TEXT2).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            minLines = 1
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        left.addView(trendLine, lp())
         button = TextView(this).apply {
             text = "Start test"
             textSize = 26f
@@ -332,17 +341,35 @@ class MainActivity : Activity(), SpeedTest.Listener {
         gauge.setColor(Colors.DOWN)
         gauge.setSpeed(result.downMbps)
         gauge.setReading(fmtMbps(result.downMbps), "Mbps down", "Done")
-        verdict.setTextColor(Colors.TEXT)
-        verdict.text = verdictFor(result, n)
-        if (result.server.ip.isNotEmpty()) { privacyCheck++; showPrivacy(n, result.server.ip, checking = false) }
-
-        history.add(History.Entry(
+        val entry = History.Entry(
             time = System.currentTimeMillis(),
             downMbps = result.downMbps, upMbps = result.upMbps,
             pingMs = result.pingMs, loadedMs = maxOf(result.downLoadedMs, result.upLoadedMs),
             vpn = n.vpn, network = n.transport, place = result.server.place,
-            server = result.server.name, tag = tag,
-        ))
+            server = result.server.name, tag = tag, streamMbps = result.streamMbps,
+        )
+        val earlier = history.entries()
+        val rating = Rating.of(result)
+        gauge.setBadge(rating.badge, ratingColor(rating))
+        val trend = Trends.trend(entry, earlier)
+        trendLine.text = Trends.line(entry, earlier)
+        trendLine.setTextColor(when {
+            trend == null -> Colors.TEXT3
+            trend.worse -> Colors.WARN
+            else -> Colors.TEXT2
+        })
+        val hint = if (settings.vpnHint) Trends.suggestion(entry, earlier) else null
+        verdict.setTextColor(Colors.TEXT)
+        verdict.text = verdictFor(result, n, hint).let { v ->
+            if (hint == null) v
+            else android.text.SpannableString(v).apply {
+                val at = v.indexOf(hint)
+                setSpan(android.text.style.ForegroundColorSpan(Colors.WARN), at, at + hint.length, 0)
+            }
+        }
+        if (result.server.ip.isNotEmpty()) { privacyCheck++; showPrivacy(n, result.server.ip, checking = false) }
+
+        history.add(entry)   // the exit IP is never part of it
         renderHistory()
     }
 
@@ -364,6 +391,7 @@ class MainActivity : Activity(), SpeedTest.Listener {
         jitter.sub.text = "ms"
         loaded.sub.text = "ms"
         showChoice()
+        trendLine.text = ""
         gauge.setColor(Colors.DOWN)
         gauge.setSpeed(0.0)
         gauge.setReading("—", "", "ready")
@@ -388,6 +416,8 @@ class MainActivity : Activity(), SpeedTest.Listener {
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                 }, LinearLayout.LayoutParams(0, WRAP_CONTENT, weight))
+            val rating = Rating.of(r)
+            cell(rating?.symbol ?: "", 0.25f, rating?.let(::ratingColor) ?: Colors.TEXT3)
             cell(whenText, 0.9f, Colors.TEXT2)
             cell("↓ ${fmtMbps(r.downMbps)}", 0.8f, Colors.DOWN)
             cell("↑ ${fmtMbps(r.upMbps)}", 0.7f, Colors.UP)
@@ -464,6 +494,10 @@ class MainActivity : Activity(), SpeedTest.Listener {
             },
             "Upload streams: ${settings.upStreams}" to {
                 pickNumber("Upload streams", Settings.UP_CHOICES, settings.upStreams, SpeedTest.UP_STREAMS) { settings.upStreams = it }
+            },
+            "Suggest another VPN when slower than usual: ${if (settings.vpnHint) "On" else "Off"}" to {
+                settings.vpnHint = !settings.vpnHint
+                showSettings()
             },
             "Reset to defaults" to {
                 settings.reset()
@@ -601,6 +635,12 @@ class MainActivity : Activity(), SpeedTest.Listener {
             ?: "nearest of ${SpeedTest.SERVERS.size}"
     }
 
+    private fun ratingColor(r: Rating) = when (r) {
+        Rating.BAD -> Colors.BAD
+        Rating.GOOD -> Colors.GOOD
+        Rating.AWESOME -> Colors.AWESOME
+    }
+
     private fun tileBackground() = StateListDrawable().apply {
         addState(intArrayOf(android.R.attr.state_focused), rounded(Colors.CARD).apply { setStroke(dp(3), Colors.CARD_FOCUS) })
         addState(intArrayOf(), rounded(Colors.CARD))
@@ -689,9 +729,10 @@ class MainActivity : Activity(), SpeedTest.Listener {
 
         /**
          * What the numbers mean for streaming on this TV. Judged on the single-stream
-         * figure: video apps fetch over one or two connections, not six.
+         * figure: video apps fetch over one or two connections, not six. A [suggestion]
+         * (switch VPN, from [Trends.suggestion]) goes second, so it is never cut off.
          */
-        fun verdictFor(r: SpeedTest.Result, net: NetInfo): String {
+        fun verdictFor(r: SpeedTest.Result, net: NetInfo, suggestion: String? = null): String {
             val lines = ArrayList<String>()
             val s = r.streamMbps
             lines += when {
@@ -702,14 +743,15 @@ class MainActivity : Activity(), SpeedTest.Listener {
                 s >= 3 -> "OK for 720p / SD video only."
                 else -> "Too slow for smooth HD video."
             }
+            if (suggestion != null) lines += suggestion
             if (s < r.downMbps * SINGLE_STREAM_SHORTFALL) lines += "One connection, as a video app uses, got only " +
                 "${fmtMbps(s)} of the ${fmtMbps(r.downMbps)} Mbps the line carries" +
                 (if (net.vpn) ": VPN tunnels often hold single connections back." else ".")
             val bloat = maxOf(r.downLoadedMs, r.upLoadedMs) - r.pingMs
             if (bloat > 100) lines += "Latency rises by ${bloat.toInt()} ms under load, so expect slow starts and " +
                 "stutter on live streams and calls."
-            if (net.vpn) lines += "Measured through the VPN (exit IP ${r.server.ip.ifEmpty { "unknown" }}). " +
-                "Try another VPN server or protocol to compare; All runs ranks them."
+            if (net.vpn) lines += "Measured through the VPN (exit IP ${r.server.ip.ifEmpty { "unknown" }})." +
+                (if (suggestion == null) " Try another VPN server or protocol to compare; All runs ranks them." else "")
             else lines += "No VPN: this ran over your own connection, so sites see your real IP."
             lines += "Data used: ${fmtData(r.downBytes + r.upBytes)} (↓ ${fmtData(r.downBytes)} · ↑ ${fmtData(r.upBytes)})."
             return lines.joinToString("\n")

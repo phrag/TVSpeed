@@ -32,6 +32,11 @@ class Settings(context: Context) {
         get() = pick(prefs.getInt("up_streams", 0), UP_CHOICES, SpeedTest.UP_STREAMS)
         set(v) = prefs.edit().putInt("up_streams", v).apply()
 
+    /** Whether a run that is clearly worse than usual through the VPN suggests switching VPN server or protocol. */
+    var vpnHint: Boolean
+        get() = prefs.getBoolean("vpn_hint", true)
+        set(v) = prefs.edit().putBoolean("vpn_hint", v).apply()
+
     val config get() = config(length, downStreams, upStreams)
 
     fun reset() = prefs.edit().clear().apply()

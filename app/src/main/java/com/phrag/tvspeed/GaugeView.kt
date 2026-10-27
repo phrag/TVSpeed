@@ -48,13 +48,22 @@ class GaugeView(ctx: Context) : View(ctx) {
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         letterSpacing = 0.15f
     }
+    private val badgeFill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val badgeText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Colors.BG
+        textAlign = Paint.Align.CENTER
+        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        letterSpacing = 0.08f
+    }
     private val arc = RectF()
+    private val pill = RectF()
 
     private var fraction = 0f
     private var animator: ValueAnimator? = null
     private var reading = "—"
     private var unit = ""
     private var label = "READY"
+    private var badge: String? = null
 
     /** Move the needle (animated) to [mbps]. */
     fun setSpeed(mbps: Double) {
@@ -73,10 +82,19 @@ class GaugeView(ctx: Context) : View(ctx) {
         invalidate()
     }
 
+    /** Any new reading takes the place of the rating badge. */
     fun setReading(value: String, unit: String, label: String) {
         reading = value
         this.unit = unit
         this.label = label.uppercase()
+        badge = null
+        invalidate()
+    }
+
+    /** A large filled pill in the gap under the arc, e.g. "✓ GOOD", in place of the phase label. */
+    fun setBadge(text: String, color: Int) {
+        badge = text
+        badgeFill.color = color
         invalidate()
     }
 
@@ -100,7 +118,18 @@ class GaugeView(ctx: Context) : View(ctx) {
         valueText.textSize = r * 0.48f
         canvas.drawText(reading, cx, cy + valueText.textSize * 0.25f, valueText)
         canvas.drawText(unit, cx, cy + valueText.textSize * 0.25f + unitText.textSize * 1.6f, unitText)
-        canvas.drawText(label, cx, cy + r * 0.92f, labelText)
+        val b = badge
+        if (b == null) {
+            canvas.drawText(label, cx, cy + r * 0.92f, labelText)
+        } else {
+            badgeText.textSize = r * 0.2f
+            val h = badgeText.textSize * 1.6f
+            val w = badgeText.measureText(b) + badgeText.textSize * 1.4f
+            val y = cy + r * 0.84f
+            pill.set(cx - w / 2, y - h / 2, cx + w / 2, y + h / 2)
+            canvas.drawRoundRect(pill, h / 2, h / 2, badgeFill)
+            canvas.drawText(b, cx, y - (badgeText.descent() + badgeText.ascent()) / 2, badgeText)
+        }
     }
 
     companion object {
