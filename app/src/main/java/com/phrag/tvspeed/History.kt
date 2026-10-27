@@ -18,6 +18,7 @@ class History(ctx: Context) {
         val place: String,   // where the test server is: "Rome, Italy"
         val server: String = "",   // which server there: "CESNET". Older runs have none.
         val tag: String = "",      // picked by the user: the VPN server or protocol used
+        val streamMbps: Double = 0.0,   // one stream, as a video app fetches. Older runs have none (0).
     )
 
     /** Runs that went out the same way (same line, VPN state, tag and test server). The exit IP is never stored. */
@@ -46,6 +47,7 @@ class History(ctx: Context) {
                 place = o.optString("place").ifEmpty { coloPlace(o.optString("colo")) },
                 server = o.optString("server"),
                 tag = o.optString("tag"),
+                streamMbps = o.optDouble("stream", 0.0),
             )
         }
     } catch (e: Exception) {
@@ -66,7 +68,7 @@ class History(ctx: Context) {
                 .put("time", it.time).put("down", it.downMbps).put("up", it.upMbps)
                 .put("ping", it.pingMs).put("loaded", it.loadedMs).put("vpn", it.vpn)
                 .put("network", it.network).put("place", it.place)
-                .put("server", it.server).put("tag", it.tag))
+                .put("server", it.server).put("tag", it.tag).put("stream", it.streamMbps))
         }
         sp.edit().putString("runs", arr.toString()).apply()
     }
@@ -80,9 +82,12 @@ class History(ctx: Context) {
         /** "Prague, Czechia · CESNET": the place alone can't tell the two Prague servers apart. */
         fun serverLabel(e: Entry) = listOf(e.place.ifEmpty { "server unknown" }, e.server).filter { it.isNotEmpty() }.joinToString(" · ")
 
+        /** What makes two runs comparable: the same line, VPN state, tag and test server. */
+        fun wayOut(e: Entry): List<Any> = listOf(e.vpn, e.network, e.tag, e.place, e.server)
+
         /** Median figures per way out (line, VPN state, tag and test server), best download first. */
         fun groups(runs: List<Entry>): List<Group> =
-            runs.groupBy { listOf(it.vpn, it.network, it.tag, it.place, it.server) }.map { (_, rs) ->
+            runs.groupBy(::wayOut).map { (_, rs) ->
                 val e = rs.first()
                 val label = listOf(e.network, if (e.vpn) "VPN" else "no VPN", e.tag, serverLabel(e)).filter { it.isNotEmpty() }.joinToString(" · ")
                 Group(label, e.vpn, rs.size, SpeedTest.median(rs.map { it.downMbps }),

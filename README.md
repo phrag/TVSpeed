@@ -31,6 +31,18 @@ It answers "why does this buffer?" rather than just "how fast is my line?":
 - **A verdict** in streaming terms, such as "Plenty for 4K60" or "Good for 1080p. 4K will
   likely buffer", judged on the single-stream figure, plus a warning when one connection gets
   much less than the line carries or when latency rises under load.
+- **A rating you can read from the sofa**: a big pill under the gauge, **✕ BAD**, **✓ GOOD** or
+  **★ AWESOME**, in red, green or gold. Bad means one stream gets under 15 Mbps (4K buffers),
+  upload is under 1 Mbps, or latency rises more than 100 ms under load. Awesome needs 80 Mbps on
+  one stream, 10 Mbps up and a rise of 30 ms or less. Each recent run shows its symbol too.
+- **Trends.** Under the gauge, the run is compared with what is usual for that way out (line, VPN
+  on or off, tag and test server): the median single-stream speed of up to 10 earlier runs, once
+  there are 3. For example "▼ 32% under usual 48 Mbps · trending down". The heading (down, steady
+  or up) compares the newer half of those runs with the older half, once there are 6.
+- **Switch VPN hint.** When a VPN run is clearly worse than usual (at least 25% slower on one
+  stream, or latency under load at least 100 ms and 1.5 times higher) and not rated awesome, the
+  verdict suggests switching VPN server or protocol, and names the tag that has done best on this
+  line (2 or more runs, at least 10% better). **Settings** can turn it off.
 
 Packet loss can't be measured over HTTP, so the app doesn't report it.
 
@@ -79,7 +91,8 @@ a country or city; a place you pick is always preferred while one of its servers
 **Settings** (top right) holds the test options, all saved on the TV: the test server;
 the test length (Quick: 6 s per direction and 5 s single stream, Standard: 12 s and 8 s,
 Long: 20 s and 12 s; shorter uses less data); and the number of parallel download (default 6)
-and upload (default 4) streams. **Reset to defaults** puts them back.
+and upload (default 4) streams; and whether a slower than usual VPN run suggests switching
+VPN. **Reset to defaults** puts them back.
 
 To test against one server from adb (no fallback), start the app with its name, then press the button:
 
@@ -129,5 +142,6 @@ app/src/main/java/com/phrag/tvspeed/
 ├── GaugeView.kt      # log-scale speedometer (0–1000 Mbps)
 ├── NetInfo.kt        # Wi-Fi/Ethernet, VPN, Wi-Fi band/link/signal
 ├── History.kt        # last few runs (SharedPreferences)
+├── Trends.kt         # bad/good/awesome rating, usual speed per way out, switch VPN hint
 └── Colors.kt
 ```

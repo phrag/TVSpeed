@@ -13,4 +13,7 @@ object Colors {
     val UP = Color.parseColor("#B388FF")
     val PING = Color.parseColor("#3DDC97")
     val WARN = Color.parseColor("#FFB74D")
+    val BAD = Color.parseColor("#FF5252")
+    val GOOD = Color.parseColor("#3DDC97")
+    val AWESOME = Color.parseColor("#FFD740")
 }
