@@ -613,6 +613,11 @@ class MainActivity : Activity(), SpeedTest.Listener {
         val input = android.widget.EditText(this).apply {
             setText(current)
             setSingleLine()
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            // Keep the IME inline so the TV keyboard works with the remote's D-pad
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE or
+                android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+                android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN
             filters = arrayOf(android.text.InputFilter.LengthFilter(MAX_TAG))
         }
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
